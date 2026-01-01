@@ -9,6 +9,9 @@ dependencies = []
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "integration: tests that call real external services (OpenAI, TMDB)",
+]
 
 [dependency-groups]
 dev = [
