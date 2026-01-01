@@ -12,6 +12,7 @@ from aninamer.openai_llm_client import (
     OpenAIConfig,
     OpenAIResponsesLLM,
     load_openai_config_from_env,
+    openai_llm_for_tmdb_id_from_env,
 )
 
 
@@ -70,6 +71,23 @@ def test_load_openai_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -
     config = load_openai_config_from_env()
     assert config.base_url == "https://api.openai.com"
     assert config.reasoning_effort is None
+
+
+def test_openai_llm_for_tmdb_id_from_env_forces_no_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "high")
+
+    transport = CaptureTransport(response=_response_with_text("ok"))
+    client = openai_llm_for_tmdb_id_from_env(transport=transport)
+
+    client.chat([ChatMessage(role="user", content="hello")], max_output_tokens=10)
+
+    body = json.loads(transport.last_body.decode("utf-8"))
+    assert body["max_output_tokens"] == 10
+    assert body["reasoning"] == {"effort": "none"}
 
 
 def test_chat_builds_request_and_parses_output() -> None:

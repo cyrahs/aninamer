@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from typing import Callable, Sequence
@@ -205,4 +205,12 @@ class OpenAIResponsesLLM(LLMClient):
 
 def openai_llm_from_env(*, transport: Transport | None = None) -> OpenAIResponsesLLM:
     config = load_openai_config_from_env()
+    return OpenAIResponsesLLM(config, transport=transport)
+
+
+def openai_llm_for_tmdb_id_from_env(
+    *, transport: Transport | None = None
+) -> OpenAIResponsesLLM:
+    config = load_openai_config_from_env()
+    config = replace(config, reasoning_effort="none")
     return OpenAIResponsesLLM(config, transport=transport)
