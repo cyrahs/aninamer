@@ -4,31 +4,16 @@ import json
 from typing import Sequence
 
 from aninamer.errors import LLMOutputError
+from aninamer.json_utils import extract_first_json_object
 from aninamer.llm_client import LLMClient
 from aninamer.prompts import build_tmdb_tv_id_select_messages
 from aninamer.tmdb_client import TvSearchResult
 
-
-def _strip_json_fence(text: str) -> str:
-    stripped = text.strip()
-    if not stripped.startswith("```"):
-        return text
-
-    lines = stripped.splitlines()
-    if len(lines) >= 2 and lines[0].startswith("```") and lines[-1].startswith("```"):
-        return "\n".join(lines[1:-1]).strip()
-
-    if stripped.endswith("```") and stripped != "```":
-        inner = stripped[3:-3].strip()
-        if inner.lower().startswith("json"):
-            inner = inner[4:].lstrip()
-        return inner
-
-    return text
-
-
 def parse_selected_tmdb_tv_id(text: str, *, allowed_ids: set[int]) -> int:
-    cleaned = _strip_json_fence(text)
+    try:
+        cleaned = extract_first_json_object(text)
+    except ValueError:
+        cleaned = text.strip()
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError as exc:
