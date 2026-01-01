@@ -15,3 +15,7 @@ class LLMOutputError(AninamerError):
 
 class OpenAIError(AninamerError):
     pass
+
+
+class ApplyError(AninamerError):
+    pass
