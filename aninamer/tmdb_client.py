@@ -1,0 +1,265 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+from typing import Callable
+from urllib import error, parse, request
+
+
+class TMDBError(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class HttpResponse:
+    status: int
+    body: bytes
+    headers: dict[str, str]
+
+
+Transport = Callable[[str, dict[str, str], float], HttpResponse]
+
+
+def default_transport(url: str, headers: dict[str, str], timeout: float) -> HttpResponse:
+    req = request.Request(url, headers=headers, method="GET")
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            status = resp.getcode()
+            body = resp.read()
+            resp_headers = {key: value for key, value in resp.headers.items()}
+            return HttpResponse(status=status, body=body, headers=resp_headers)
+    except error.HTTPError as exc:
+        body = exc.read()
+        resp_headers = {key: value for key, value in exc.headers.items()} if exc.headers else {}
+        return HttpResponse(status=exc.code, body=body, headers=resp_headers)
+    except Exception as exc:
+        raise TMDBError(f"network error for {url}: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class TvSearchResult:
+    id: int
+    name: str
+    first_air_date: str | None
+    original_name: str | None
+    popularity: float | None
+    vote_count: int | None
+
+    @property
+    def year(self) -> int | None:
+        return _parse_year(self.first_air_date)
+
+
+@dataclass(frozen=True)
+class SeasonSummary:
+    season_number: int
+    episode_count: int
+
+
+@dataclass(frozen=True)
+class TvDetails:
+    id: int
+    name: str
+    original_name: str | None
+    first_air_date: str | None
+    seasons: list[SeasonSummary]
+
+    @property
+    def year(self) -> int | None:
+        return _parse_year(self.first_air_date)
+
+
+@dataclass(frozen=True)
+class Episode:
+    episode_number: int
+    name: str | None
+    overview: str | None
+
+
+@dataclass(frozen=True)
+class SeasonDetails:
+    id: int | None
+    season_number: int
+    episodes: list[Episode]
+
+    @property
+    def episode_count(self) -> int:
+        return len(self.episodes)
+
+
+def _parse_year(value: str | None) -> int | None:
+    if not value:
+        return None
+    year_text = value.split("-", 1)[0]
+    if len(year_text) != 4:
+        return None
+    try:
+        return int(year_text)
+    except ValueError:
+        return None
+
+
+def _require_key(data: dict[str, object], key: str, url: str) -> object:
+    if key not in data:
+        raise TMDBError(f"missing '{key}' in response from {url}")
+    return data[key]
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, int):
+        return value
+    return None
+
+
+class TMDBClient:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        base_url: str = "https://api.themoviedb.org/3",
+        timeout: float = 30.0,
+        transport: Transport | None = None,
+        user_agent: str = "aninamer/0.1",
+    ) -> None:
+        if not api_key:
+            raise ValueError("api_key must be non-empty")
+        self._api_key = api_key
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout
+        self._transport = transport or default_transport
+        self._headers = {"Accept": "application/json", "User-Agent": user_agent}
+        self._last_url = ""
+
+    def search_tv(
+        self, query: str, *, language: str = "zh-CN", page: int = 1
+    ) -> list[TvSearchResult]:
+        data = self._get_json(
+            "/search/tv",
+            {"query": query, "language": language, "page": page},
+        )
+        if "results" not in data:
+            raise TMDBError(f"missing 'results' in response from {self._last_url}")
+        results_raw = data["results"]
+        if not isinstance(results_raw, list):
+            raise TMDBError(f"invalid 'results' in response from {self._last_url}")
+
+        results: list[TvSearchResult] = []
+        for item in results_raw:
+            if not isinstance(item, dict):
+                raise TMDBError(f"invalid result entry in response from {self._last_url}")
+            raw_id = _require_key(item, "id", self._last_url)
+            raw_name = _require_key(item, "name", self._last_url)
+            if not isinstance(raw_id, int) or not isinstance(raw_name, str):
+                raise TMDBError(f"invalid result fields in response from {self._last_url}")
+            results.append(
+                TvSearchResult(
+                    id=raw_id,
+                    name=raw_name,
+                    first_air_date=_optional_str(item.get("first_air_date")),
+                    original_name=_optional_str(item.get("original_name")),
+                    popularity=_optional_float(item.get("popularity")),
+                    vote_count=_optional_int(item.get("vote_count")),
+                )
+            )
+        return results
+
+    def get_tv_details(self, tv_id: int, *, language: str = "zh-CN") -> TvDetails:
+        data = self._get_json(
+            f"/tv/{tv_id}",
+            {"language": language},
+        )
+        raw_id = _require_key(data, "id", self._last_url)
+        raw_name = _require_key(data, "name", self._last_url)
+        raw_seasons = _require_key(data, "seasons", self._last_url)
+        if not isinstance(raw_id, int) or not isinstance(raw_name, str):
+            raise TMDBError(f"invalid tv details in response from {self._last_url}")
+        if not isinstance(raw_seasons, list):
+            raise TMDBError(f"invalid 'seasons' in response from {self._last_url}")
+
+        seasons: list[SeasonSummary] = []
+        for item in raw_seasons:
+            if not isinstance(item, dict):
+                raise TMDBError(f"invalid season in response from {self._last_url}")
+            season_number = _require_key(item, "season_number", self._last_url)
+            episode_count = _require_key(item, "episode_count", self._last_url)
+            if not isinstance(season_number, int) or not isinstance(episode_count, int):
+                raise TMDBError(f"invalid season fields in response from {self._last_url}")
+            seasons.append(
+                SeasonSummary(season_number=season_number, episode_count=episode_count)
+            )
+        seasons.sort(key=lambda season: season.season_number)
+        return TvDetails(
+            id=raw_id,
+            name=raw_name,
+            original_name=_optional_str(data.get("original_name")),
+            first_air_date=_optional_str(data.get("first_air_date")),
+            seasons=seasons,
+        )
+
+    def get_season(
+        self, tv_id: int, season_number: int, *, language: str = "zh-CN"
+    ) -> SeasonDetails:
+        data = self._get_json(
+            f"/tv/{tv_id}/season/{season_number}",
+            {"language": language},
+        )
+        episodes_raw = _require_key(data, "episodes", self._last_url)
+        if not isinstance(episodes_raw, list):
+            raise TMDBError(f"invalid 'episodes' in response from {self._last_url}")
+
+        parsed_season_number = data.get("season_number")
+        if not isinstance(parsed_season_number, int):
+            parsed_season_number = season_number
+
+        parsed_id = data.get("id") if isinstance(data.get("id"), int) else None
+
+        episodes: list[Episode] = []
+        for item in episodes_raw:
+            if not isinstance(item, dict):
+                raise TMDBError(f"invalid episode in response from {self._last_url}")
+            episode_number = _require_key(item, "episode_number", self._last_url)
+            if not isinstance(episode_number, int):
+                raise TMDBError(f"invalid episode fields in response from {self._last_url}")
+            episodes.append(
+                Episode(
+                    episode_number=episode_number,
+                    name=_optional_str(item.get("name")),
+                    overview=_optional_str(item.get("overview")),
+                )
+            )
+        episodes.sort(key=lambda episode: episode.episode_number)
+        return SeasonDetails(
+            id=parsed_id,
+            season_number=parsed_season_number,
+            episodes=episodes,
+        )
+
+    def _get_json(self, path: str, params: dict[str, object]) -> dict[str, object]:
+        url = self._build_url(path, {**params, "api_key": self._api_key})
+        self._last_url = url
+        response = self._transport(url, dict(self._headers), self._timeout)
+        if response.status < 200 or response.status >= 300:
+            raise TMDBError(f"tmdb request failed ({response.status}) for {url}")
+        try:
+            data = json.loads(response.body)
+        except Exception as exc:
+            raise TMDBError(f"invalid json from {url}") from exc
+        if not isinstance(data, dict):
+            raise TMDBError(f"unexpected json from {url}")
+        return data
+
+    def _build_url(self, path: str, params: dict[str, object]) -> str:
+        normalized_path = path if path.startswith("/") else f"/{path}"
+        base_url = f"{self._base_url}{normalized_path}"
+        query = parse.urlencode(params)
+        return f"{base_url}?{query}" if query else base_url
