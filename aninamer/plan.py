@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -8,6 +9,8 @@ from aninamer.episode_mapping import EpisodeMapItem, EpisodeMappingResult
 from aninamer.errors import PlanValidationError
 from aninamer.scanner import FileCandidate, ScanResult
 from aninamer.subtitles import detect_chinese_sub_variant
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,12 @@ def build_rename_plan(
             f"tmdb_id {tmdb_id} does not match mapping tmdb_id {mapping.tmdb_id}"
         )
 
+    logger.info(
+        "plan: start tmdb_id=%s output_root=%s item_count=%s",
+        tmdb_id,
+        output_root,
+        len(mapping.items),
+    )
     series_dir = _resolve_path(scan.series_dir)
     output_root_resolved = _resolve_path(output_root)
     series_folder = format_series_root_folder(series_name_zh_cn, year, tmdb_id)
@@ -206,6 +215,20 @@ def build_rename_plan(
 
     sorted_moves = tuple(
         sorted(moves, key=lambda move: (move.kind, move.dst.as_posix()))
+    )
+
+    video_moves = sum(1 for move in sorted_moves if move.kind == "video")
+    subtitle_moves = sum(1 for move in sorted_moves if move.kind == "subtitle")
+    logger.info(
+        "plan: built total_moves=%s video_moves=%s subtitle_moves=%s series_folder_name=%s",
+        len(sorted_moves),
+        video_moves,
+        subtitle_moves,
+        series_folder,
+    )
+    logger.debug(
+        "plan: sample_destinations=%s",
+        [move.dst.as_posix() for move in sorted_moves[:10]],
     )
 
     return RenamePlan(

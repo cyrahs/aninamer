@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 VIDEO_EXTS = {
     ".mkv",
@@ -44,6 +47,8 @@ class ScanResult:
 def scan_series_dir(series_dir: Path) -> ScanResult:
     if not series_dir.exists() or not series_dir.is_dir():
         raise ValueError("series_dir must be an existing directory")
+
+    logger.info("scan: start series_dir=%s", series_dir)
 
     video_items: list[tuple[str, str, int]] = []
     subtitle_items: list[tuple[str, str, int]] = []
@@ -89,5 +94,19 @@ def scan_series_dir(series_dir: Path) -> ScanResult:
                 size_bytes=size_bytes,
             )
         )
+
+    logger.info(
+        "scan: done videos=%s subtitles=%s",
+        len(videos),
+        len(subtitles),
+    )
+    logger.debug(
+        "scan: sample_videos=%s",
+        [candidate.rel_path for candidate in videos[:10]],
+    )
+    logger.debug(
+        "scan: sample_subtitles=%s",
+        [candidate.rel_path for candidate in subtitles[:10]],
+    )
 
     return ScanResult(series_dir=series_dir, videos=videos, subtitles=subtitles)

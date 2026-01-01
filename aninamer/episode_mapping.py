@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 from typing import Mapping, Sequence
 
 from aninamer.errors import LLMOutputError
@@ -10,6 +11,8 @@ from aninamer.llm_client import LLMClient
 from aninamer.prompts import build_episode_mapping_messages
 from aninamer.scanner import ScanResult
 from aninamer.tmdb_client import SeasonDetails
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -169,6 +172,13 @@ def map_episodes_with_llm(
     llm: LLMClient,
     max_output_tokens: int = 2048,
 ) -> EpisodeMappingResult:
+    logger.info(
+        "episode_map: start tmdb_id=%s video_count=%s subtitle_count=%s max_output_tokens=%s",
+        tmdb_id,
+        len(scan.videos),
+        len(scan.subtitles),
+        max_output_tokens,
+    )
     messages = build_episode_mapping_messages(
         tmdb_id=tmdb_id,
         series_name_zh_cn=series_name_zh_cn,
@@ -179,11 +189,20 @@ def map_episodes_with_llm(
         videos=scan.videos,
         subtitles=scan.subtitles,
     )
+    logger.info("episode_map: llm_call message_count=%s", len(messages))
     response = llm.chat(messages, temperature=0.0, max_output_tokens=max_output_tokens)
-    return parse_episode_mapping_output(
+    logger.debug("episode_map: raw_llm_output=%s", response)
+    result = parse_episode_mapping_output(
         response,
         expected_tmdb_id=tmdb_id,
         video_ids={video.id for video in scan.videos},
         subtitle_ids={subtitle.id for subtitle in scan.subtitles},
         season_episode_counts=season_episode_counts,
     )
+    mapped_subtitles_count = sum(len(item.subtitle_ids) for item in result.items)
+    logger.info(
+        "episode_map: parsed mapped_items_count=%s mapped_subtitles_count=%s",
+        len(result.items),
+        mapped_subtitles_count,
+    )
+    return result

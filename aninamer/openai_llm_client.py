@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import json
+import logging
 import os
 from typing import Callable, Sequence
 from urllib import error as url_error
@@ -9,6 +10,8 @@ from urllib import request
 
 from aninamer.errors import OpenAIError
 from aninamer.llm_client import ChatMessage, LLMClient
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -162,14 +165,23 @@ class OpenAIResponsesLLM(LLMClient):
             payload["reasoning"] = {"effort": reasoning_effort}
 
         body = json.dumps(payload).encode("utf-8")
+        endpoint = _endpoint_for_base_url(self._config.base_url)
+        logger.info(
+            "openai: request model=%s endpoint=%s effective_max_output_tokens=%s reasoning_effort=%s message_count=%s",
+            self._config.model,
+            endpoint,
+            effective_max_output_tokens,
+            reasoning_effort,
+            len(messages),
+        )
         headers = {
             "Authorization": f"Bearer {self._config.api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": self._config.user_agent,
         }
-        endpoint = _endpoint_for_base_url(self._config.base_url)
         response = self._transport(endpoint, body, headers, self._config.timeout)
+        logger.debug("openai: response_status=%s", response.status)
 
         if response.status < 200 or response.status >= 300:
             message = _extract_error_message(response.body)
@@ -198,6 +210,7 @@ class OpenAIResponsesLLM(LLMClient):
                         texts.append(text)
 
         result = "\n".join(texts).strip()
+        logger.debug("openai: raw_output_text=%s", result)
         if not result:
             raise OpenAIError("no output_text found in response")
         return result

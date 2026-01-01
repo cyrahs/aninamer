@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 from typing import Callable
 from urllib import error, parse, request
+
+logger = logging.getLogger(__name__)
 
 
 class TMDBError(Exception):
@@ -171,6 +174,12 @@ class TMDBClient:
                     vote_count=_optional_int(item.get("vote_count")),
                 )
             )
+        logger.info(
+            "tmdb: search_tv done query=%s language=%s results_count=%s",
+            query,
+            language,
+            len(results),
+        )
         return results
 
     def get_tv_details(self, tv_id: int, *, language: str = "zh-CN") -> TvDetails:
@@ -198,6 +207,12 @@ class TMDBClient:
                 SeasonSummary(season_number=season_number, episode_count=episode_count)
             )
         seasons.sort(key=lambda season: season.season_number)
+        logger.info(
+            "tmdb: get_tv_details done tv_id=%s language=%s seasons_count=%s",
+            tv_id,
+            language,
+            len(seasons),
+        )
         return TvDetails(
             id=raw_id,
             name=raw_name,
@@ -235,9 +250,16 @@ class TMDBClient:
                     episode_number=episode_number,
                     name=_optional_str(item.get("name")),
                     overview=_optional_str(item.get("overview")),
-                )
             )
+        )
         episodes.sort(key=lambda episode: episode.episode_number)
+        logger.info(
+            "tmdb: get_season done tv_id=%s season_number=%s language=%s episodes_count=%s",
+            tv_id,
+            season_number,
+            language,
+            len(episodes),
+        )
         return SeasonDetails(
             id=parsed_id,
             season_number=parsed_season_number,
@@ -245,14 +267,20 @@ class TMDBClient:
         )
 
     def _get_json(self, path: str, params: dict[str, object]) -> dict[str, object]:
+        sanitized_params = {key: value for key, value in params.items() if key != "api_key"}
+        logger.debug("tmdb: request path=%s params=%s", path, sanitized_params)
         url = self._build_url(path, {**params, "api_key": self._api_key})
         self._last_url = url
         response = self._transport(url, dict(self._headers), self._timeout)
         if response.status < 200 or response.status >= 300:
+            logger.warning(
+                "tmdb: request failed path=%s status=%s", path, response.status
+            )
             raise TMDBError(f"tmdb request failed ({response.status}) for {url}")
         try:
             data = json.loads(response.body)
         except Exception as exc:
+            logger.warning("tmdb: invalid json path=%s", path)
             raise TMDBError(f"invalid json from {url}") from exc
         if not isinstance(data, dict):
             raise TMDBError(f"unexpected json from {url}")
