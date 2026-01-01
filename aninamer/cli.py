@@ -99,9 +99,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Allow pre-existing destinations.",
     )
     run_parser.add_argument(
-        "--yes",
+        "--apply",
         action="store_true",
-        help="Apply moves (default is dry-run).",
+        help="Apply moves (default is plan only).",
     )
 
     apply_parser = subparsers.add_parser("apply", help="Apply a rename plan.")
@@ -158,6 +158,18 @@ def _print_apply_summary(dry_run: bool, applied_count: int, rollback_file: Path)
     status = "dry-run" if dry_run else "applied"
     print(f"Apply {status}: {applied_count} moves")
     print(f"Rollback plan: {rollback_file}")
+
+
+def _print_run_plan_summary(plan: RenamePlan, plan_file: Path) -> None:
+    video_moves = sum(1 for move in plan.moves if move.kind == "video")
+    subtitle_moves = sum(1 for move in plan.moves if move.kind == "subtitle")
+    print(f"wrote plan to {plan_file}")
+    print(f"moves: videos={video_moves} subtitles={subtitle_moves}")
+
+
+def _print_run_apply_summary(applied_count: int, rollback_file: Path) -> None:
+    print(f"applied moves: {applied_count}")
+    print(f"wrote rollback to {rollback_file}")
 
 
 def _build_plan_from_args(
@@ -239,13 +251,14 @@ def _build_plan_from_args(
     return plan, plan_file
 
 
-def _run_plan(
+def _do_plan(
     args: argparse.Namespace,
     *,
     tmdb_client_factory: Callable[[], TMDBClient] | None,
     llm_for_tmdb_id_factory: Callable[[], LLMClient] | None,
     llm_for_mapping_factory: Callable[[], LLMClient] | None,
-) -> int:
+    summary: Callable[[RenamePlan, Path], None],
+) -> tuple[RenamePlan, Path]:
     plan, plan_file = _build_plan_from_args(
         args,
         tmdb_client_factory=tmdb_client_factory,
@@ -253,16 +266,17 @@ def _run_plan(
         llm_for_mapping_factory=llm_for_mapping_factory,
     )
     write_rename_plan_json(plan_file, plan)
-    _print_plan_summary(plan, plan_file)
-    return 0
+    summary(plan, plan_file)
+    return plan, plan_file
 
 
-def _run_apply(args: argparse.Namespace) -> int:
-    plan_path = args.plan_json
-    plan = read_rename_plan_json(plan_path)
-    result = apply_rename_plan(plan, dry_run=args.dry_run)
-
-    rollback_file = args.rollback_file or plan_path.with_name("rollback_plan.json")
+def _do_apply_from_plan(
+    plan: RenamePlan,
+    *,
+    rollback_file: Path,
+    dry_run: bool,
+) -> int:
+    result = apply_rename_plan(plan, dry_run=dry_run)
     rollback_plan = RenamePlan(
         tmdb_id=plan.tmdb_id,
         series_name_zh_cn=plan.series_name_zh_cn,
@@ -272,7 +286,37 @@ def _run_apply(args: argparse.Namespace) -> int:
         moves=result.rollback_moves,
     )
     write_rename_plan_json(rollback_file, rollback_plan)
-    _print_apply_summary(result.dry_run, len(result.applied), rollback_file)
+    return len(result.applied)
+
+
+def _run_plan(
+    args: argparse.Namespace,
+    *,
+    tmdb_client_factory: Callable[[], TMDBClient] | None,
+    llm_for_tmdb_id_factory: Callable[[], LLMClient] | None,
+    llm_for_mapping_factory: Callable[[], LLMClient] | None,
+) -> int:
+    _do_plan(
+        args,
+        tmdb_client_factory=tmdb_client_factory,
+        llm_for_tmdb_id_factory=llm_for_tmdb_id_factory,
+        llm_for_mapping_factory=llm_for_mapping_factory,
+        summary=_print_plan_summary,
+    )
+    return 0
+
+
+def _run_apply(args: argparse.Namespace) -> int:
+    plan_path = args.plan_json
+    plan = read_rename_plan_json(plan_path)
+
+    rollback_file = args.rollback_file or plan_path.with_name("rollback_plan.json")
+    applied_count = _do_apply_from_plan(
+        plan,
+        rollback_file=rollback_file,
+        dry_run=args.dry_run,
+    )
+    _print_apply_summary(args.dry_run, applied_count, rollback_file)
     return 0
 
 
@@ -283,29 +327,23 @@ def _run_run(
     llm_for_tmdb_id_factory: Callable[[], LLMClient] | None,
     llm_for_mapping_factory: Callable[[], LLMClient] | None,
 ) -> int:
-    plan, plan_file = _build_plan_from_args(
+    plan, plan_file = _do_plan(
         args,
         tmdb_client_factory=tmdb_client_factory,
         llm_for_tmdb_id_factory=llm_for_tmdb_id_factory,
         llm_for_mapping_factory=llm_for_mapping_factory,
+        summary=_print_run_plan_summary,
     )
-    write_rename_plan_json(plan_file, plan)
-    _print_plan_summary(plan, plan_file)
-
-    dry_run = not args.yes
-    result = apply_rename_plan(plan, dry_run=dry_run)
+    if not args.apply:
+        return 0
 
     rollback_file = args.rollback_file or plan_file.with_name("rollback_plan.json")
-    rollback_plan = RenamePlan(
-        tmdb_id=plan.tmdb_id,
-        series_name_zh_cn=plan.series_name_zh_cn,
-        year=plan.year,
-        series_dir=plan.series_dir,
-        output_root=plan.output_root,
-        moves=result.rollback_moves,
+    applied_count = _do_apply_from_plan(
+        plan,
+        rollback_file=rollback_file,
+        dry_run=False,
     )
-    write_rename_plan_json(rollback_file, rollback_plan)
-    _print_apply_summary(result.dry_run, len(result.applied), rollback_file)
+    _print_run_apply_summary(applied_count, rollback_file)
     return 0
 
 

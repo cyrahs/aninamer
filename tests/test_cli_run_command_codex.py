@@ -1,6 +1,3 @@
-# pytest script for Step 13 (keep separate from the Codex prompt)
-# Save as: tests/test_cli_run_command.py
-
 from __future__ import annotations
 
 import json
@@ -65,13 +62,21 @@ class FakeTMDBClient:
             name="测试动画",
             original_name="Test Anime",
             first_air_date="2020-01-01",
-            seasons=[SeasonSummary(season_number=1, episode_count=1)],
+            seasons=[
+                SeasonSummary(season_number=0, episode_count=1),
+                SeasonSummary(season_number=1, episode_count=1),
+            ],
         )
 
     def get_season(self, tv_id: int, season_number: int, *, language: str = "zh-CN") -> SeasonDetails:
         self.season_calls.append((tv_id, season_number, language))
-        # In this test, there are no specials; if called, just return empty specials.
-        return SeasonDetails(id=None, season_number=season_number, episodes=[])
+        if season_number != 0:
+            raise AssertionError("FakeTMDBClient only expects S00 calls in this test")
+        return SeasonDetails(
+            id=999,
+            season_number=0,
+            episodes=[Episode(episode_number=1, name="OVA", overview="OVA 特别篇")],
+        )
 
 
 def _write(p: Path, data: bytes) -> None:
@@ -79,10 +84,13 @@ def _write(p: Path, data: bytes) -> None:
     p.write_bytes(data)
 
 
-def test_cli_run_without_apply_writes_plan_only(tmp_path: Path) -> None:
+def test_cli_run_dry_run_default_writes_plan_but_does_not_move(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     series_dir = tmp_path / "InputSeries"
     out_root = tmp_path / "Out"
     plan_file = tmp_path / "rename_plan.json"
+    rollback_file = tmp_path / "rollback_plan.json"
 
     _write(series_dir / "ep1.mkv", b"video")
     _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
@@ -110,8 +118,9 @@ def test_cli_run_without_apply_writes_plan_only(tmp_path: Path) -> None:
     )
     assert rc == 0
     assert plan_file.exists()
+    assert not rollback_file.exists()
 
-    # No apply => sources still exist, destinations do not.
+    # No file moves should have happened
     assert (series_dir / "ep1.mkv").exists()
     assert (series_dir / "ep1.ass").exists()
 
@@ -121,12 +130,21 @@ def test_cli_run_without_apply_writes_plan_only(tmp_path: Path) -> None:
     assert not dst_video.exists()
     assert not dst_sub.exists()
 
+    # Plan JSON is valid
+    data = json.loads(plan_file.read_text(encoding="utf-8"))
+    assert data["version"] == 1
+    assert data["tmdb_id"] == 100
+    assert len(data["moves"]) == 2
 
-def test_cli_run_with_apply_moves_files_and_writes_rollback(tmp_path: Path) -> None:
+    out = capsys.readouterr().out
+    assert f"wrote plan to {plan_file}" in out
+    assert "moves: videos=1 subtitles=1" in out
+
+
+def test_cli_run_apply_applies_moves(tmp_path: Path) -> None:
     series_dir = tmp_path / "InputSeries"
     out_root = tmp_path / "Out"
     plan_file = tmp_path / "rename_plan.json"
-    rollback_file = tmp_path / "rollback_plan.json"
 
     _write(series_dir / "ep1.mkv", b"video")
     _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
@@ -143,8 +161,6 @@ def test_cli_run_with_apply_moves_files_and_writes_rollback(tmp_path: Path) -> N
             str(out_root),
             "--plan-file",
             str(plan_file),
-            "--rollback-file",
-            str(rollback_file),
             "--apply",
         ],
         tmdb_client_factory=lambda: fake_tmdb,
@@ -153,19 +169,14 @@ def test_cli_run_with_apply_moves_files_and_writes_rollback(tmp_path: Path) -> N
     )
     assert rc == 0
     assert plan_file.exists()
-    assert rollback_file.exists()
 
     series_folder = out_root / "测试动画 (2020) {tmdb-100}"
     dst_video = series_folder / "S01" / "测试动画 S01E01.mkv"
     dst_sub = series_folder / "S01" / "测试动画 S01E01.chs.ass"
-
     assert dst_video.exists()
     assert dst_sub.exists()
     assert not (series_dir / "ep1.mkv").exists()
     assert not (series_dir / "ep1.ass").exists()
 
-    # Rollback file should be valid JSON and contain moves
-    rb = json.loads(rollback_file.read_text(encoding="utf-8"))
-    assert rb["version"] == 1
-    assert rb["tmdb_id"] == 100
-    assert len(rb["moves"]) == 2
+    rollback_file = plan_file.with_name("rollback_plan.json")
+    assert rollback_file.exists()
