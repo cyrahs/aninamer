@@ -5,6 +5,10 @@ class AninamerError(Exception):
     pass
 
 
+class PlanValidationError(AninamerError):
+    pass
+
+
 class LLMOutputError(AninamerError):
     pass
 
