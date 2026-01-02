@@ -187,5 +187,5 @@ def test_monitor_default_state_file_under_log_path(tmp_path: Path) -> None:
     state_file = log_path / "monitor_state.json"
     assert state_file.exists()
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 2
+    assert data["version"] == 3
     assert str(series_dir.resolve()) in set(data["processed"])

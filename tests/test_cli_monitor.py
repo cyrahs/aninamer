@@ -104,13 +104,14 @@ def test_cli_monitor_once_plans_without_apply(tmp_path: Path) -> None:
     state_file = log_path / "monitor_state.json"
     assert state_file.exists()
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 2
+    assert data["version"] == 3
     baseline = set(data["baseline"])
     assert str(series_a.resolve(strict=False)) in baseline
     assert str(series_b.resolve(strict=False)) in baseline
     assert data["pending"] == []
     assert data["planned"] == []
     assert data["processed"] == []
+    assert data["failed"] == []
     assert mapping_llm.calls == 0
 
     assert (series_a / "ep1.mkv").exists()
@@ -183,10 +184,11 @@ def test_cli_monitor_once_pending_when_not_settled(tmp_path: Path) -> None:
 
     state_file = log_path / "monitor_state.json"
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 2
+    assert data["version"] == 3
     assert str(series_dir.resolve(strict=False)) in data["pending"]
     assert data["planned"] == []
     assert data["processed"] == []
+    assert data["failed"] == []
     assert mapping_llm.calls == 0
 
     assert (series_dir / "ep1.mkv").exists()
@@ -242,10 +244,11 @@ def test_cli_monitor_apply_marks_state_and_moves(tmp_path: Path) -> None:
 
     state_file = log_path / "monitor_state.json"
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 2
+    assert data["version"] == 3
     assert str(series_dir.resolve(strict=False)) in data["processed"]
     assert data["pending"] == []
     assert data["planned"] == []
+    assert data["failed"] == []
 
     series_folder = out_root / "Show (2020) {tmdb-123}"
     dst_video = series_folder / "S01" / "Show S01E01.mkv"
@@ -254,3 +257,68 @@ def test_cli_monitor_apply_marks_state_and_moves(tmp_path: Path) -> None:
     assert dst_sub.exists()
     assert not (series_dir / "ep1.mkv").exists()
     assert not (series_dir / "ep1.ass").exists()
+
+
+def test_cli_monitor_marks_failed_and_skips_future_runs(tmp_path: Path) -> None:
+    input_root = tmp_path / "Input"
+    series_dir = input_root / "SeriesFail"
+    _write(series_dir / "ep1.mkv", b"video")
+    _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
+
+    out_root = tmp_path / "Out"
+    log_path = tmp_path / "logs"
+
+    details = TvDetails(
+        id=123,
+        name="Show",
+        original_name=None,
+        first_air_date="2020-01-01",
+        seasons=[SeasonSummary(season_number=1, episode_count=1)],
+    )
+    tmdb = FakeTMDB(details=details)
+    mapping_llm = FakeLLM(reply="not json")
+
+    args = [
+        "--log-path",
+        str(log_path),
+        "monitor",
+        str(input_root),
+        "--out",
+        str(out_root),
+        "--once",
+        "--tmdb",
+        "123",
+        "--settle-seconds",
+        "0",
+        "--include-existing",
+    ]
+
+    rc1 = main(
+        args,
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_mapping_factory=lambda: mapping_llm,
+    )
+    assert rc1 == 0
+
+    plan_path, rollback_path = _default_plan_paths(log_path, series_dir)
+    assert not plan_path.exists()
+    assert not rollback_path.exists()
+
+    state_file = log_path / "monitor_state.json"
+    data = json.loads(state_file.read_text(encoding="utf-8"))
+    assert data["version"] == 3
+    resolved = str(series_dir.resolve(strict=False))
+    assert resolved in data["failed"]
+    assert resolved not in data["pending"]
+    assert resolved not in data["planned"]
+    assert resolved not in data["processed"]
+    calls_after_first = mapping_llm.calls
+    assert calls_after_first > 0
+
+    rc2 = main(
+        args,
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_mapping_factory=lambda: mapping_llm,
+    )
+    assert rc2 == 0
+    assert mapping_llm.calls == calls_after_first

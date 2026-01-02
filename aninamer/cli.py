@@ -378,10 +378,17 @@ class MonitorState:
     pending: set[str]
     planned: set[str]
     processed: set[str]
+    failed: set[str]
 
 
 def _empty_monitor_state() -> MonitorState:
-    return MonitorState(baseline=set(), pending=set(), planned=set(), processed=set())
+    return MonitorState(
+        baseline=set(),
+        pending=set(),
+        planned=set(),
+        processed=set(),
+        failed=set(),
+    )
 
 
 def _load_state_list(data: dict[str, object], field: str) -> set[str]:
@@ -407,6 +414,7 @@ def _load_monitor_state(path: Path) -> tuple[MonitorState, str]:
                     pending=set(),
                     planned=set(),
                     processed=processed,
+                    failed=set(),
                 ),
                 "v1",
             )
@@ -421,10 +429,27 @@ def _load_monitor_state(path: Path) -> tuple[MonitorState, str]:
                     pending=pending,
                     planned=planned,
                     processed=processed,
+                    failed=set(),
                 ),
                 "v2",
             )
-        raise ValueError("state version must be 1 or 2")
+        if version == 3:
+            baseline = _load_state_list(data, "baseline")
+            pending = _load_state_list(data, "pending")
+            planned = _load_state_list(data, "planned")
+            processed = _load_state_list(data, "processed")
+            failed = _load_state_list(data, "failed")
+            return (
+                MonitorState(
+                    baseline=baseline,
+                    pending=pending,
+                    planned=planned,
+                    processed=processed,
+                    failed=failed,
+                ),
+                "v3",
+            )
+        raise ValueError("state version must be 1, 2, or 3")
     except Exception as exc:
         logger.warning(
             "monitor: state_read_failed path=%s error=%s",
@@ -436,11 +461,12 @@ def _load_monitor_state(path: Path) -> tuple[MonitorState, str]:
 
 def _write_monitor_state(path: Path, state: MonitorState) -> None:
     payload = {
-        "version": 2,
+        "version": 3,
         "baseline": sorted(state.baseline),
         "pending": sorted(state.pending),
         "planned": sorted(state.planned),
         "processed": sorted(state.processed),
+        "failed": sorted(state.failed),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -758,6 +784,7 @@ def _run_monitor(
                 pending=set(),
                 planned=set(),
                 processed=set(state.processed),
+                failed=set(state.failed),
             )
             _write_monitor_state(state_file, state)
             logger.info(
@@ -772,10 +799,21 @@ def _run_monitor(
 
         state_dirty = False
 
+        if state.failed:
+            if state.pending.intersection(state.failed):
+                state.pending.difference_update(state.failed)
+                state_dirty = True
+            if state.planned.intersection(state.failed):
+                state.planned.difference_update(state.failed)
+                state_dirty = True
+
         for series_dir in series_dirs:
             resolved = str(series_dir.resolve(strict=False))
             if resolved in state.processed:
                 logger.debug("monitor: skip_processed series_dir=%s", series_dir)
+                continue
+            if resolved in state.failed:
+                logger.debug("monitor: skip_failed series_dir=%s", series_dir)
                 continue
             if not args.include_existing and resolved in state.baseline:
                 logger.debug("monitor: skip_baseline series_dir=%s", series_dir)
@@ -788,6 +826,10 @@ def _run_monitor(
 
         if args.apply:
             for resolved in sorted(state.planned):
+                if resolved in state.failed:
+                    state.planned.discard(resolved)
+                    state_dirty = True
+                    continue
                 series_dir = resolved_map.get(resolved, Path(resolved))
                 plan_path, rollback_path = _default_plan_paths(log_path, series_dir)
                 _ensure_not_within(plan_path, series_dir, output_root, "plan file")
@@ -816,9 +858,16 @@ def _run_monitor(
                         series_dir,
                         exc,
                     )
+                    state.planned.discard(resolved)
+                    state.failed.add(resolved)
+                    state_dirty = True
                     continue
 
         for resolved in sorted(state.pending):
+            if resolved in state.failed:
+                state.pending.discard(resolved)
+                state_dirty = True
+                continue
             series_dir = resolved_map.get(resolved, Path(resolved))
             if resolved not in current_dirs:
                 continue
@@ -887,6 +936,9 @@ def _run_monitor(
                     series_dir,
                     exc,
                 )
+                state.pending.discard(resolved)
+                state.failed.add(resolved)
+                state_dirty = True
                 continue
 
         if state_dirty:

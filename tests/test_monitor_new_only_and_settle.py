@@ -106,11 +106,12 @@ def test_monitor_first_run_bootstraps_baseline_and_skips_existing_by_default(tmp
     assert (show_old / "ep1.mkv").exists()
     assert not any(out_root.rglob("*.mkv"))
 
-    # State file should exist and contain baseline, version 2
+    # State file should exist and contain baseline, version 3
     state_file = log_path / "monitor_state.json"
     assert state_file.exists()
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 2
+    assert data["version"] == 3
+    assert data.get("failed", []) == []
     assert str(show_old.resolve()) in set(data["baseline"])
     assert data.get("pending", []) == []
     assert data.get("planned", []) == []
