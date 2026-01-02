@@ -7,9 +7,17 @@ import pytest
 
 from aninamer.errors import LLMOutputError, OpenAIError
 from aninamer.llm_client import ChatMessage
-from aninamer.prompts import build_tmdb_tv_id_select_messages
+from aninamer.prompts import (
+    build_tmdb_title_clean_messages,
+    build_tmdb_tv_id_select_messages,
+)
 from aninamer.tmdb_client import TvSearchResult
-from aninamer.tmdb_resolve import parse_selected_tmdb_tv_id, resolve_tmdb_tv_id_with_llm
+from aninamer.tmdb_resolve import (
+    parse_selected_tmdb_tv_id,
+    parse_tmdb_search_title,
+    resolve_tmdb_search_title_with_llm,
+    resolve_tmdb_tv_id_with_llm,
+)
 
 
 @dataclass
@@ -79,6 +87,16 @@ def test_build_tmdb_tv_id_select_messages_contains_allowed_ids_and_candidate_lin
     assert "2|B|" in user  # first_air_date missing -> empty field
 
 
+def test_build_tmdb_title_clean_messages_contains_dirname() -> None:
+    msgs = build_tmdb_title_clean_messages("Noisy Dir")
+
+    assert len(msgs) == 2
+    assert msgs[0].role == "system"
+    assert msgs[1].role == "user"
+    assert "Noisy Dir" in msgs[1].content
+    assert '{"title": "<string>"}' in msgs[1].content
+
+
 def test_parse_selected_tmdb_tv_id_accepts_valid() -> None:
     assert parse_selected_tmdb_tv_id('{"tmdb": 123}', allowed_ids={123, 456}) == 123
 
@@ -105,6 +123,27 @@ def test_parse_selected_tmdb_tv_id_rejects_non_numeric_string() -> None:
 def test_parse_selected_tmdb_tv_id_rejects_id_not_allowed() -> None:
     with pytest.raises(LLMOutputError):
         parse_selected_tmdb_tv_id('{"tmdb": 999}', allowed_ids={1, 2})
+
+
+def test_parse_tmdb_search_title_accepts_valid() -> None:
+    assert parse_tmdb_search_title('{"title": "Show Name"}') == "Show Name"
+
+
+def test_parse_tmdb_search_title_accepts_fenced_json() -> None:
+    assert (
+        parse_tmdb_search_title('```json\n{"title": "Show Name"}\n```')
+        == "Show Name"
+    )
+
+
+def test_parse_tmdb_search_title_rejects_extra_keys() -> None:
+    with pytest.raises(LLMOutputError):
+        parse_tmdb_search_title('{"title": "Show", "extra": 1}')
+
+
+def test_parse_tmdb_search_title_rejects_empty() -> None:
+    with pytest.raises(LLMOutputError):
+        parse_tmdb_search_title('{"title": "  "}')
 
 
 def test_resolve_tmdb_tv_id_with_llm_short_circuits_single_candidate() -> None:
@@ -135,6 +174,15 @@ def test_resolve_tmdb_tv_id_with_llm_retries_on_openai_error() -> None:
     tv_id = resolve_tmdb_tv_id_with_llm("Dir", cands, llm)
 
     assert tv_id == 2
+    assert llm.calls == 2
+
+
+def test_resolve_tmdb_search_title_with_llm_retries_on_openai_error() -> None:
+    llm = SequenceLLM(outputs=[OpenAIError("boom"), '{"title": "Clean Title"}'])
+
+    title = resolve_tmdb_search_title_with_llm("Dir", llm)
+
+    assert title == "Clean Title"
     assert llm.calls == 2
 
 

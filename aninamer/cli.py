@@ -35,7 +35,10 @@ from aninamer.plan import (
 from aninamer.plan_io import read_rename_plan_json, write_rename_plan_json
 from aninamer.scanner import SKIP_DIR_NAMES, scan_series_dir
 from aninamer.tmdb_client import TMDBClient, TMDBError, TvSearchResult
-from aninamer.tmdb_resolve import resolve_tmdb_tv_id_with_llm
+from aninamer.tmdb_resolve import (
+    resolve_tmdb_search_title_with_llm,
+    resolve_tmdb_tv_id_with_llm,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -248,39 +251,99 @@ def _list_existing_s00_files(
     return names
 
 
-def _search_tmdb_candidates(tmdb: TMDBClient, name: str) -> list[TvSearchResult]:
+def _search_tmdb_candidates(
+    tmdb: TMDBClient,
+    name: str,
+    *,
+    llm_title_factory: Callable[[], LLMClient] | None = None,
+) -> list[TvSearchResult]:
     queries = build_tmdb_query_variants(name)
     languages = ["zh-CN", "en-US", "ja-JP"]
     logger.info("tmdb_search: start name=%s variants=%s", name, len(queries))
 
-    for query in queries:
-        candidates_by_id: dict[int, TvSearchResult] = {}
-        first_language_with_results: str | None = None
-        for language in languages:
-            results = tmdb.search_tv(query, language=language, page=1)
-            logger.info(
-                "tmdb_search: attempt query=%s language=%s results=%s",
-                query,
-                language,
-                len(results),
-            )
-            if results and first_language_with_results is None:
-                first_language_with_results = language
-            for candidate in results:
-                if candidate.id not in candidates_by_id:
-                    candidates_by_id[candidate.id] = candidate
-        if candidates_by_id:
-            logger.info(
-                "tmdb_search: success query=%s language=%s candidates=%s",
-                query,
-                first_language_with_results or languages[0],
-                len(candidates_by_id),
-            )
-            return list(candidates_by_id.values())
+    def _search_queries(query_list: Sequence[str]) -> list[TvSearchResult]:
+        for query in query_list:
+            candidates_by_id: dict[int, TvSearchResult] = {}
+            first_language_with_results: str | None = None
+            for language in languages:
+                results = tmdb.search_tv(query, language=language, page=1)
+                logger.info(
+                    "tmdb_search: attempt query=%s language=%s results=%s",
+                    query,
+                    language,
+                    len(results),
+                )
+                if results and first_language_with_results is None:
+                    first_language_with_results = language
+                for candidate in results:
+                    if candidate.id not in candidates_by_id:
+                        candidates_by_id[candidate.id] = candidate
+            if candidates_by_id:
+                logger.info(
+                    "tmdb_search: success query=%s language=%s candidates=%s",
+                    query,
+                    first_language_with_results or languages[0],
+                    len(candidates_by_id),
+                )
+                return list(candidates_by_id.values())
+        return []
 
-    logger.error("tmdb_search: failed name=%s queries=%s", name, queries)
-    raise ValueError(f"no TMDB results for name '{name}' (attempted queries: {queries})")
+    candidates = _search_queries(queries)
+    if candidates:
+        return candidates
 
+    if llm_title_factory is None:
+        logger.error("tmdb_search: failed name=%s queries=%s", name, queries)
+        raise ValueError(
+            f"no TMDB results for name '{name}' (attempted queries: {queries})"
+        )
+
+    logger.info("tmdb_search: llm_title_fallback name=%s", name)
+    try:
+        llm = llm_title_factory()
+    except Exception as exc:
+        logger.warning("tmdb_search: llm_title_unavailable error=%s", exc)
+        raise ValueError(
+            f"no TMDB results for name '{name}' (attempted queries: {queries})"
+        ) from exc
+
+    try:
+        llm_title = resolve_tmdb_search_title_with_llm(name, llm)
+    except (OpenAIError, LLMOutputError) as exc:
+        logger.warning("tmdb_search: llm_title_failed error=%s", exc)
+        raise ValueError(
+            f"no TMDB results for name '{name}' (attempted queries: {queries})"
+        ) from exc
+
+    llm_queries = build_tmdb_query_variants(llm_title)
+    attempted = {query.casefold() for query in queries}
+    llm_queries = [
+        query for query in llm_queries if query.casefold() not in attempted
+    ]
+    if not llm_queries:
+        logger.error(
+            "tmdb_search: llm_title_no_new_queries name=%s llm_title=%s",
+            name,
+            llm_title,
+        )
+        raise ValueError(
+            f"no TMDB results for name '{name}' (attempted queries: {queries})"
+        )
+
+    candidates = _search_queries(llm_queries)
+    if candidates:
+        return candidates
+
+    all_queries = queries + llm_queries
+    logger.error(
+        "tmdb_search: failed name=%s queries=%s llm_title=%s",
+        name,
+        all_queries,
+        llm_title,
+    )
+    raise ValueError(
+        f"no TMDB results for name '{name}' (attempted queries: {all_queries})"
+    )
 
 def _print_plan_summary(plan: RenamePlan, plan_file: Path) -> None:
     video_moves = sum(1 for move in plan.moves if move.kind == "video")
@@ -544,7 +607,16 @@ def _build_plan_from_args(
             series_dir.name,
         )
     else:
-        candidates = _search_tmdb_candidates(tmdb, series_dir.name)
+        llm_title_factory = (
+            llm_for_tmdb_id_factory
+            if llm_for_tmdb_id_factory
+            else openai_llm_for_tmdb_id_from_env
+        )
+        candidates = _search_tmdb_candidates(
+            tmdb,
+            series_dir.name,
+            llm_title_factory=llm_title_factory,
+        )
         if len(candidates) == 1:
             tmdb_id = candidates[0].id
         else:

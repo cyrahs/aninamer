@@ -106,6 +106,44 @@ class FakeTMDBClientForCleaning:
         return SeasonDetails(id=None, season_number=season_number, episodes=[])
 
 
+class FakeTMDBClientForLLMTitle:
+    def __init__(self, target_query: str, tmdb_id: int) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.target_query = target_query
+        self.tmdb_id = tmdb_id
+
+    def search_tv(
+        self, query: str, *, language: str = "zh-CN", page: int = 1
+    ) -> list[TvSearchResult]:
+        self.calls.append((query, language))
+        if query.strip() == self.target_query:
+            return [
+                TvSearchResult(
+                    id=self.tmdb_id,
+                    name="Found Title",
+                    first_air_date="2022-01-01",
+                    original_name="Found Title",
+                    popularity=1.0,
+                    vote_count=10,
+                )
+            ]
+        return []
+
+    def get_tv_details(self, tv_id: int, *, language: str = "zh-CN") -> TvDetails:
+        return TvDetails(
+            id=tv_id,
+            name="Found Title",
+            original_name="Found Title",
+            first_air_date="2022-01-01",
+            seasons=[SeasonSummary(season_number=1, episode_count=1)],
+        )
+
+    def get_season(
+        self, tv_id: int, season_number: int, *, language: str = "zh-CN"
+    ) -> SeasonDetails:
+        return SeasonDetails(id=None, season_number=season_number, episodes=[])
+
+
 def _write(p: Path, data: bytes) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(data)
@@ -150,6 +188,39 @@ def test_cli_plan_falls_back_to_cleaned_query(tmp_path: Path) -> None:
 
     # Ensure TMDB search was attempted with cleaned core query at least once
     assert ("Mahouka Koukou no Rettousei", "zh-CN") in tmdb.calls or ("Mahouka Koukou no Rettousei", "en-US") in tmdb.calls
+
+
+def test_cli_plan_falls_back_to_llm_title_when_search_empty(tmp_path: Path) -> None:
+    series_dir = tmp_path / "[X] Unfindable Title [1080p]"
+    out_root = tmp_path / "out"
+    plan_file = tmp_path / "rename_plan.json"
+    log_path = tmp_path / "logs"
+
+    _write(series_dir / "ep1.mkv", b"video")
+
+    tmdb = FakeTMDBClientForLLMTitle(target_query="LLM Title", tmdb_id=4242)
+    llm_title = FakeLLM(reply='{"title": "LLM Title"}')
+    llm_map = FakeLLM(reply='{"tmdb":4242,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[]}]}')
+
+    rc = main(
+        [
+            "--log-path",
+            str(log_path),
+            "plan",
+            str(series_dir),
+            "--out",
+            str(out_root),
+            "--plan-file",
+            str(plan_file),
+        ],
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_tmdb_id_factory=lambda: llm_title,
+        llm_for_mapping_factory=lambda: llm_map,
+    )
+    assert rc == 0
+    assert plan_file.exists()
+    assert ("LLM Title", "zh-CN") in tmdb.calls or ("LLM Title", "en-US") in tmdb.calls
+    assert llm_title.calls == 1
 
 
 def test_cli_plan_error_includes_attempted_queries(tmp_path: Path) -> None:

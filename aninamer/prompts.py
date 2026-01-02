@@ -80,6 +80,26 @@ def build_tmdb_tv_id_select_messages(
     ]
 
 
+def build_tmdb_title_clean_messages(dirname: str) -> list[ChatMessage]:
+    system_content = (
+        "Extract the canonical TV series title from a noisy folder name for TMDB search. "
+        "Respond with ONLY valid JSON in the form {\"title\": \"...\"} with no other keys, "
+        "no markdown, and no commentary. The title should exclude release groups, "
+        "quality tags, season/episode markers, and other non-title metadata."
+    )
+
+    lines = [
+        f"dirname: {dirname}",
+        'required output schema: {"title": "<string>"}',
+    ]
+    user_content = "\n".join(lines)
+
+    return [
+        ChatMessage(role="system", content=system_content),
+        ChatMessage(role="user", content=user_content),
+    ]
+
+
 def build_episode_mapping_messages(
     *,
     tmdb_id: int,
