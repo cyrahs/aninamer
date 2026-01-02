@@ -30,16 +30,25 @@ SUBTITLE_EXTS = {
 
 SKIP_DIR_NAMES = {
     "sample",
+    "samples",
     "trailer",
+    "trailers",
     "bonus",
     "extra",
+    "extras",
+    "sp",
     "sps",
+    "cd",
     "cds",
+    "music",
+    "musics",
     "scans",
     "scan",
+    "menu",
+    "menus",
+    "preview",
     "previews",
     "映像特典",
-    "menu",
 }
 
 
