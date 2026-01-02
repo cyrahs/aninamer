@@ -28,6 +28,20 @@ SUBTITLE_EXTS = {
     ".sup",
 }
 
+SKIP_DIR_NAMES = {
+    "sample",
+    "trailer",
+    "bonus",
+    "extra",
+    "sps",
+    "cds",
+    "scans",
+    "scan",
+    "previews",
+    "映像特典",
+    "menu",
+}
+
 
 @dataclass(frozen=True)
 class FileCandidate:
@@ -53,7 +67,8 @@ def scan_series_dir(series_dir: Path) -> ScanResult:
     video_items: list[tuple[str, str, int]] = []
     subtitle_items: list[tuple[str, str, int]] = []
 
-    for root, _dirs, files in os.walk(series_dir, followlinks=False):
+    for root, dirs, files in os.walk(series_dir, followlinks=False):
+        dirs[:] = [name for name in dirs if name.casefold() not in SKIP_DIR_NAMES]
         root_path = Path(root)
         for name in files:
             file_path = root_path / name

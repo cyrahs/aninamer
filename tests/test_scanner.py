@@ -123,6 +123,22 @@ def test_scan_series_dir_filters_and_sorts_and_assigns_ids(tmp_path: Path) -> No
     assert "archive.zip" not in all_rel
 
 
+def test_scan_series_dir_skips_named_directories(tmp_path: Path) -> None:
+    root = tmp_path / "Show"
+
+    _write(root / "SPs" / "sp1.mkv", b"x")
+    _write(root / "Bonus" / "bonus1.ass", b"y")
+    _write(root / "映像特典" / "extra1.mp4", b"z")
+    _write(root / "Previews" / "preview1.srt", b"w")
+    _write(root / "main" / "ep1.mkv", b"ok")
+    _write(root / "main" / "ep1.srt", b"sub")
+
+    result = scan_series_dir(root)
+
+    assert [v.rel_path for v in result.videos] == ["main/ep1.mkv"]
+    assert [s.rel_path for s in result.subtitles] == ["main/ep1.srt"]
+
+
 def test_scan_series_dir_rejects_non_directory(tmp_path: Path) -> None:
     file_path = tmp_path / "not_a_dir"
     file_path.write_text("x", encoding="utf-8")
