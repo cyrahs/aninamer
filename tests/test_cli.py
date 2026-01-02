@@ -170,6 +170,49 @@ def test_cli_plan_uses_llm_for_tmdb_id(tmp_path: Path) -> None:
     assert plan.tmdb_id == 456
 
 
+def test_cli_plan_uses_tmdb_tag_from_dirname(tmp_path: Path) -> None:
+    series_dir = tmp_path / "Series {tmdb-456}"
+    _write(series_dir / "ep1.mkv", b"video")
+    out_root = tmp_path / "out"
+    plan_path = tmp_path / "rename_plan.json"
+    log_path = tmp_path / "logs"
+
+    details = TvDetails(
+        id=456,
+        name="Show",
+        original_name=None,
+        first_air_date="2020-01-01",
+        seasons=[SeasonSummary(season_number=1, episode_count=1)],
+    )
+    tmdb = FakeTMDB(search_results=[], details=details)
+    llm_for_id = FakeLLM(reply='{"tmdb":123}')
+    mapping_llm = FakeLLM(
+        reply='{"tmdb":456,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[]}]}'
+    )
+
+    rc = main(
+        [
+            "--log-path",
+            str(log_path),
+            "plan",
+            str(series_dir),
+            "--out",
+            str(out_root),
+            "--plan-file",
+            str(plan_path),
+        ],
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_tmdb_id_factory=lambda: llm_for_id,
+        llm_for_mapping_factory=lambda: mapping_llm,
+    )
+
+    assert rc == 0
+    assert llm_for_id.calls == 0
+    assert tmdb.search_queries == []
+    plan = read_rename_plan_json(plan_path)
+    assert plan.tmdb_id == 456
+
+
 def test_cli_apply_writes_rollback_plan(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     series_dir = tmp_path / "series"
     out_root = tmp_path / "out"

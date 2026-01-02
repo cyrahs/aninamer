@@ -51,6 +51,7 @@ _SEASON_PATTERNS = (
     re.compile(r"(?i)(?<!\w)\d{1,2}(?:st|nd|rd|th)\s*season(?!\w)"),
     re.compile(rf"\u7b2c\s*(?:\d+|[{_CHINESE_NUMERALS}]+)\s*\u5b63"),
 )
+_TMDB_TAG_PATTERN = re.compile(r"\{\s*tmdb-([^{}]+)\s*\}", re.IGNORECASE)
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -122,3 +123,18 @@ def build_tmdb_query_variants(name: str, *, max_variants: int = 6) -> list[str]:
         deduped.append(variant)
 
     return deduped[:max_variants]
+
+
+def extract_tmdb_id_tag(name: str) -> int | None:
+    matches = _TMDB_TAG_PATTERN.findall(name)
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ValueError("multiple tmdb tags found in name")
+    raw = matches[0].strip()
+    if not raw.isdigit():
+        raise ValueError("tmdb tag must be numeric")
+    tmdb_id = int(raw)
+    if tmdb_id < 1:
+        raise ValueError("tmdb id must be >= 1")
+    return tmdb_id

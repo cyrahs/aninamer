@@ -21,7 +21,7 @@ from aninamer.errors import (
 )
 from aninamer.llm_client import LLMClient
 from aninamer.logging_utils import configure_logging
-from aninamer.name_clean import build_tmdb_query_variants
+from aninamer.name_clean import build_tmdb_query_variants, extract_tmdb_id_tag
 from aninamer.openai_llm_client import (
     openai_llm_for_tmdb_id_from_env,
     openai_llm_from_env,
@@ -529,8 +529,20 @@ def _build_plan_from_args(
 
     tmdb = tmdb_client_factory() if tmdb_client_factory else _tmdb_client_from_env()
 
+    tag_tmdb_id = extract_tmdb_id_tag(series_dir.name)
     if args.tmdb is not None:
+        if tag_tmdb_id is not None and tag_tmdb_id != args.tmdb:
+            raise ValueError(
+                f"tmdb tag {tag_tmdb_id} does not match --tmdb {args.tmdb} for {series_dir.name}"
+            )
         tmdb_id = args.tmdb
+    elif tag_tmdb_id is not None:
+        tmdb_id = tag_tmdb_id
+        logger.info(
+            "tmdb_resolve: using tag id=%s dirname=%s",
+            tmdb_id,
+            series_dir.name,
+        )
     else:
         candidates = _search_tmdb_candidates(tmdb, series_dir.name)
         if len(candidates) == 1:

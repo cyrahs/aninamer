@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from aninamer.name_clean import build_tmdb_query_variants, clean_tmdb_query
+from aninamer.name_clean import (
+    build_tmdb_query_variants,
+    clean_tmdb_query,
+    extract_tmdb_id_tag,
+)
 
 
 def test_clean_tmdb_query_strips_release_tags_and_season_marker() -> None:
@@ -29,3 +33,15 @@ def test_build_tmdb_query_variants_shortens_cleaned_name() -> None:
 def test_build_tmdb_query_variants_requires_positive_max() -> None:
     with pytest.raises(ValueError):
         build_tmdb_query_variants("Name", max_variants=0)
+
+
+def test_extract_tmdb_id_tag_parses_single_tag() -> None:
+    assert extract_tmdb_id_tag("Series {tmdb-123}") == 123
+    assert extract_tmdb_id_tag("Series {TMDB-456}") == 456
+
+
+def test_extract_tmdb_id_tag_rejects_invalid_or_multiple() -> None:
+    with pytest.raises(ValueError):
+        extract_tmdb_id_tag("Series {tmdb-abc}")
+    with pytest.raises(ValueError):
+        extract_tmdb_id_tag("Series {tmdb-1} {tmdb-2}")
