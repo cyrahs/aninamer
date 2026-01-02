@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Mapping, Sequence
 
-from aninamer.errors import LLMOutputError
+from aninamer.errors import LLMOutputError, OpenAIError
 from aninamer.json_utils import extract_first_json_object
 from aninamer.llm_client import LLMClient
 from aninamer.prompts import build_episode_mapping_messages
@@ -172,7 +172,10 @@ def map_episodes_with_llm(
     existing_s00_files: Sequence[str] | None = None,
     llm: LLMClient,
     max_output_tokens: int = 2048,
+    max_attempts: int = 3,
 ) -> EpisodeMappingResult:
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
     logger.info(
         "episode_map: start tmdb_id=%s video_count=%s subtitle_count=%s max_output_tokens=%s",
         tmdb_id,
@@ -196,19 +199,38 @@ def map_episodes_with_llm(
         [{"role": msg.role, "content": msg.content} for msg in messages],
     )
     logger.info("episode_map: llm_call message_count=%s", len(messages))
-    response = llm.chat(messages, temperature=0.0, max_output_tokens=max_output_tokens)
-    logger.debug("episode_map: raw_llm_output=%s", response)
-    result = parse_episode_mapping_output(
-        response,
-        expected_tmdb_id=tmdb_id,
-        video_ids={video.id for video in scan.videos},
-        subtitle_ids={subtitle.id for subtitle in scan.subtitles},
-        season_episode_counts=season_episode_counts,
-    )
-    mapped_subtitles_count = sum(len(item.subtitle_ids) for item in result.items)
-    logger.info(
-        "episode_map: parsed mapped_items_count=%s mapped_subtitles_count=%s",
-        len(result.items),
-        mapped_subtitles_count,
-    )
-    return result
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = llm.chat(
+                messages,
+                temperature=0.0,
+                max_output_tokens=max_output_tokens,
+            )
+            logger.debug("episode_map: raw_llm_output=%s", response)
+            result = parse_episode_mapping_output(
+                response,
+                expected_tmdb_id=tmdb_id,
+                video_ids={video.id for video in scan.videos},
+                subtitle_ids={subtitle.id for subtitle in scan.subtitles},
+                season_episode_counts=season_episode_counts,
+            )
+            mapped_subtitles_count = sum(
+                len(item.subtitle_ids) for item in result.items
+            )
+            logger.info(
+                "episode_map: parsed mapped_items_count=%s mapped_subtitles_count=%s",
+                len(result.items),
+                mapped_subtitles_count,
+            )
+            return result
+        except (OpenAIError, LLMOutputError) as exc:
+            if attempt >= max_attempts:
+                raise
+            logger.warning(
+                "episode_map: llm_retry attempt=%s/%s error=%s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+
+    raise RuntimeError("episode_map: unreachable")

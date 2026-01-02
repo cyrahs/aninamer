@@ -775,10 +775,10 @@ def _run_monitor(
         for series_dir in series_dirs:
             resolved = str(series_dir.resolve(strict=False))
             if resolved in state.processed:
-                logger.info("monitor: skip_processed series_dir=%s", series_dir)
+                logger.debug("monitor: skip_processed series_dir=%s", series_dir)
                 continue
             if not args.include_existing and resolved in state.baseline:
-                logger.info("monitor: skip_baseline series_dir=%s", series_dir)
+                logger.debug("monitor: skip_baseline series_dir=%s", series_dir)
                 continue
             if resolved in state.planned or resolved in state.pending:
                 continue

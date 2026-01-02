@@ -5,7 +5,7 @@ from typing import Sequence
 
 import pytest
 
-from aninamer.errors import LLMOutputError
+from aninamer.errors import LLMOutputError, OpenAIError
 from aninamer.llm_client import ChatMessage
 from aninamer.prompts import build_tmdb_tv_id_select_messages
 from aninamer.tmdb_client import TvSearchResult
@@ -28,6 +28,29 @@ class FakeLLM:
         self.calls += 1
         self.last_messages = list(messages)
         return self.reply
+
+
+@dataclass
+class SequenceLLM:
+    outputs: list[object]
+    calls: int = 0
+
+    def chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        temperature: float = 0.0,
+        max_output_tokens: int = 256,
+    ) -> str:
+        if self.calls >= len(self.outputs):
+            raise AssertionError("unexpected extra llm call")
+        value = self.outputs[self.calls]
+        self.calls += 1
+        if isinstance(value, BaseException):
+            raise value
+        if not isinstance(value, str):
+            raise AssertionError("expected string output")
+        return value
 
 
 def _cand(i: int, name: str, date: str | None = None) -> TvSearchResult:
@@ -103,6 +126,16 @@ def test_resolve_tmdb_tv_id_with_llm_calls_llm_and_parses() -> None:
     assert llm.last_messages is not None
     assert llm.last_messages[0].role == "system"
     assert llm.last_messages[1].role == "user"
+
+
+def test_resolve_tmdb_tv_id_with_llm_retries_on_openai_error() -> None:
+    llm = SequenceLLM(outputs=[OpenAIError("boom"), '{"tmdb": 2}'])
+    cands = [_cand(1, "A"), _cand(2, "B")]
+
+    tv_id = resolve_tmdb_tv_id_with_llm("Dir", cands, llm)
+
+    assert tv_id == 2
+    assert llm.calls == 2
 
 
 def test_resolve_tmdb_tv_id_with_llm_respects_max_candidates() -> None:

@@ -99,6 +99,29 @@ class FakeLLM:
         return self.reply
 
 
+@dataclass
+class SequenceLLM:
+    outputs: list[object]
+    calls: int = 0
+
+    def chat(
+        self,
+        messages: list[ChatMessage],
+        *,
+        temperature: float = 0.0,
+        max_output_tokens: int = 256,
+    ) -> str:
+        if self.calls >= len(self.outputs):
+            raise AssertionError("unexpected extra llm call")
+        value = self.outputs[self.calls]
+        self.calls += 1
+        if isinstance(value, BaseException):
+            raise value
+        if not isinstance(value, str):
+            raise AssertionError("expected string output")
+        return value
+
+
 def test_map_episodes_with_llm_calls_llm_and_parses() -> None:
     scan = ScanResult(
         series_dir=Path("series"),
@@ -128,3 +151,57 @@ def test_map_episodes_with_llm_calls_llm_and_parses() -> None:
     _messages, temperature, max_output_tokens = llm.calls[0]
     assert temperature == 0.0
     assert max_output_tokens == 123
+
+
+def test_map_episodes_with_llm_retries_on_llm_output_error() -> None:
+    scan = ScanResult(
+        series_dir=Path("series"),
+        videos=[FileCandidate(id=1, rel_path="ep1.mkv", ext=".mkv", size_bytes=100)],
+        subtitles=[FileCandidate(id=2, rel_path="ep1.srt", ext=".srt", size_bytes=10)],
+    )
+    llm = SequenceLLM(
+        outputs=[
+            "not json",
+            '{"tmdb": 99, "eps": [{"v": 1, "s": 1, "e1": 1, "e2": 1, "u": [2]}]}',
+        ]
+    )
+
+    result = map_episodes_with_llm(
+        tmdb_id=99,
+        series_name_zh_cn="Series Name",
+        year=None,
+        season_episode_counts={1: 1},
+        specials_zh=None,
+        specials_en=None,
+        scan=scan,
+        llm=llm,
+        max_output_tokens=123,
+        max_attempts=3,
+    )
+
+    assert result.tmdb_id == 99
+    assert llm.calls == 2
+
+
+def test_map_episodes_with_llm_stops_after_default_retries() -> None:
+    scan = ScanResult(
+        series_dir=Path("series"),
+        videos=[FileCandidate(id=1, rel_path="ep1.mkv", ext=".mkv", size_bytes=100)],
+        subtitles=[FileCandidate(id=2, rel_path="ep1.srt", ext=".srt", size_bytes=10)],
+    )
+    llm = SequenceLLM(outputs=["bad", "still bad", "nope"])
+
+    with pytest.raises(LLMOutputError, match="invalid json"):
+        map_episodes_with_llm(
+            tmdb_id=99,
+            series_name_zh_cn="Series Name",
+            year=None,
+            season_episode_counts={1: 1},
+            specials_zh=None,
+            specials_en=None,
+            scan=scan,
+            llm=llm,
+            max_output_tokens=123,
+        )
+
+    assert llm.calls == 3
