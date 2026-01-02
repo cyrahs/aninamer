@@ -118,7 +118,7 @@ def _apply_single_stage(
         for idx in order:
             move, src, dst = moves_to_apply[idx]
             dst.parent.mkdir(parents=True, exist_ok=True)
-            logger.debug("apply: single_move src=%s dst=%s", src, dst)
+            logger.info("apply: single_move src=%s dst=%s", src, dst)
             shutil.move(str(src), str(dst))
             applied.append((move, src, dst))
 
@@ -143,10 +143,10 @@ def _apply_single_stage(
         for _move, src, dst in reversed(applied):
             try:
                 if dst.exists():
-                    logger.debug("apply: rollback_move src=%s dst=%s", dst, src)
+                    logger.info("apply: rollback_move src=%s dst=%s", dst, src)
                     shutil.move(str(dst), str(src))
             except Exception:
-                logger.debug(
+                logger.info(
                     "apply: rollback_move failed src=%s dst=%s",
                     dst,
                     src,
@@ -220,17 +220,17 @@ def _apply_two_stage(
         for move, src, dst, tmp_path in reversed(staged):
             try:
                 if tmp_path.exists():
-                    logger.debug(
+                    logger.info(
                         "apply: rollback_move src=%s dst=%s", tmp_path, src
                     )
                     shutil.move(str(tmp_path), str(src))
                 elif dst.exists():
-                    logger.debug(
+                    logger.info(
                         "apply: rollback_move src=%s dst=%s", dst, src
                     )
                     shutil.move(str(dst), str(src))
             except Exception:
-                logger.debug(
+                logger.info(
                     "apply: rollback_move failed src=%s dst=%s",
                     tmp_path if tmp_path.exists() else dst,
                     src,
