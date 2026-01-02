@@ -90,6 +90,7 @@ def build_episode_mapping_messages(
     specials_en: SeasonDetails | None,
     videos: Sequence[FileCandidate],
     subtitles: Sequence[FileCandidate],
+    existing_s00_files: Sequence[str] | None = None,
     max_special_overview_chars: int = 160,
 ) -> list[ChatMessage]:
     system_content = (
@@ -154,6 +155,14 @@ def build_episode_mapping_messages(
             lines.append(
                 f"{ep_number}|{name_zh}|{overview_zh}|{name_en}|{overview_en}"
             )
+
+    if existing_s00_files:
+        lines.append("existing destination S00 files:")
+        lines.append("name")
+        for name in existing_s00_files:
+            cleaned = _clean_cell(name)
+            if cleaned:
+                lines.append(cleaned)
 
     lines.append("FILES:")
     lines.append("videos:")

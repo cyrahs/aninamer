@@ -169,6 +169,7 @@ def map_episodes_with_llm(
     specials_zh: SeasonDetails | None,
     specials_en: SeasonDetails | None,
     scan: ScanResult,
+    existing_s00_files: Sequence[str] | None = None,
     llm: LLMClient,
     max_output_tokens: int = 2048,
 ) -> EpisodeMappingResult:
@@ -188,6 +189,7 @@ def map_episodes_with_llm(
         specials_en=specials_en,
         videos=scan.videos,
         subtitles=scan.subtitles,
+        existing_s00_files=existing_s00_files,
     )
     logger.debug(
         "episode_map: llm_prompt=%s",

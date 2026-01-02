@@ -34,6 +34,7 @@ def test_build_episode_mapping_messages_includes_sections_and_sanitizes() -> Non
     subtitles = [
         FileCandidate(id=4, rel_path="subs\tfile|.srt", ext=".srt", size_bytes=456)
     ]
+    existing_s00_files = ["Series S00E01.mkv", "OVA|02\nchs.ass"]
 
     messages = build_episode_mapping_messages(
         tmdb_id=123,
@@ -44,6 +45,7 @@ def test_build_episode_mapping_messages_includes_sections_and_sanitizes() -> Non
         specials_en=specials_en,
         videos=videos,
         subtitles=subtitles,
+        existing_s00_files=existing_s00_files,
         max_special_overview_chars=5,
     )
 
@@ -61,5 +63,8 @@ def test_build_episode_mapping_messages_includes_sections_and_sanitizes() -> Non
     assert "S01=12" in user
     assert "specials (season 0):" in user
     assert "1|OVA Name Z|ABC D|OVA EN|EN OV" in user
+    assert "existing destination S00 files:" in user
+    assert "Series S00E01.mkv" in user
+    assert "OVA 02 chs.ass" in user
     assert "1|dir a b.mkv|123" in user
     assert "4|subs file .srt|456" in user

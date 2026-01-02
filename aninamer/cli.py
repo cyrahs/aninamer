@@ -21,7 +21,12 @@ from aninamer.openai_llm_client import (
     openai_llm_for_tmdb_id_from_env,
     openai_llm_from_env,
 )
-from aninamer.plan import RenamePlan, build_rename_plan
+from aninamer.plan import (
+    RenamePlan,
+    build_rename_plan,
+    format_season_folder,
+    format_series_root_folder,
+)
 from aninamer.plan_io import read_rename_plan_json, write_rename_plan_json
 from aninamer.scanner import scan_series_dir
 from aninamer.tmdb_client import TMDBClient, TMDBError, TvSearchResult
@@ -146,6 +151,21 @@ def _resolve_series_name(details_name: str | None, original: str | None) -> str:
     return "Unknown"
 
 
+def _list_existing_s00_files(
+    output_root: Path,
+    series_name_zh_cn: str,
+    year: int | None,
+    tmdb_id: int,
+) -> list[str]:
+    series_folder = format_series_root_folder(series_name_zh_cn, year, tmdb_id)
+    s00_dir = output_root / series_folder / format_season_folder(0)
+    if not s00_dir.exists() or not s00_dir.is_dir():
+        return []
+    names = [path.name for path in s00_dir.iterdir() if path.is_file()]
+    names.sort(key=lambda value: value.casefold())
+    return names
+
+
 def _search_tmdb_candidates(tmdb: TMDBClient, name: str) -> list[TvSearchResult]:
     queries = build_tmdb_query_variants(name)
     languages = ["zh-CN", "en-US", "ja-JP"]
@@ -257,6 +277,12 @@ def _build_plan_from_args(
         if llm_for_mapping_factory
         else openai_llm_from_env()
     )
+    existing_s00_files = _list_existing_s00_files(
+        output_root,
+        series_name_zh_cn,
+        year,
+        tmdb_id,
+    )
     mapping = map_episodes_with_llm(
         tmdb_id=tmdb_id,
         series_name_zh_cn=series_name_zh_cn,
@@ -265,6 +291,7 @@ def _build_plan_from_args(
         specials_zh=specials_zh,
         specials_en=specials_en,
         scan=scan,
+        existing_s00_files=existing_s00_files,
         llm=llm_for_mapping,
         max_output_tokens=args.max_output_tokens,
     )
