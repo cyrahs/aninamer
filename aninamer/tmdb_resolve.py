@@ -68,6 +68,10 @@ def resolve_tmdb_tv_id_with_llm(
         candidate_list,
         max_candidates=max_candidates,
     )
+    logger.debug(
+        "tmdb_resolve: llm_prompt=%s",
+        [{"role": msg.role, "content": msg.content} for msg in messages],
+    )
 
     allowed_ids = {candidate.id for candidate in candidate_list[:max_candidates]}
     logger.info(

@@ -67,13 +67,15 @@ def test_tmdb_resolve_logs_raw_llm_output(tmp_path: Path, caplog: pytest.LogCapt
     text = caplog.text
     assert "tmdb_resolve: start" in text
     assert "tmdb_resolve: llm_call" in text
+    assert "tmdb_resolve: llm_prompt" in text
+    assert "dirname: DirName" in text
     assert "tmdb_resolve: raw_llm_output" in text
     assert '{"tmdb": 111}' in text
     assert "tmdb_resolve: selected" in text
 
 
 def test_episode_mapping_and_plan_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG)
 
     series_dir = tmp_path / "input"
     out_root = tmp_path / "out"
@@ -121,6 +123,8 @@ def test_episode_mapping_and_plan_logs(tmp_path: Path, caplog: pytest.LogCapture
     text = caplog.text
     assert "episode_map: start" in text
     assert "episode_map: llm_call" in text
+    assert "episode_map: llm_prompt" in text
+    assert "schema (no extra keys)" in text
     assert "episode_map: parsed" in text
     assert "plan: start" in text
     assert "plan: built" in text

@@ -119,6 +119,47 @@ def _extract_error_message(body: bytes) -> str:
     return "unknown error"
 
 
+def _collect_reasoning_texts(value: object) -> list[str]:
+    texts: list[str] = []
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned:
+            texts.append(cleaned)
+        return texts
+    if isinstance(value, dict):
+        text = value.get("text")
+        if isinstance(text, str):
+            cleaned = text.strip()
+            if cleaned:
+                texts.append(cleaned)
+        summary = value.get("summary")
+        if isinstance(summary, str):
+            cleaned = summary.strip()
+            if cleaned:
+                texts.append(cleaned)
+        content = value.get("content")
+        if content is not None:
+            texts.extend(_collect_reasoning_texts(content))
+        return texts
+    if isinstance(value, list):
+        for item in value:
+            texts.extend(_collect_reasoning_texts(item))
+        return texts
+    return texts
+
+
+def _extract_reasoning_texts(output: Sequence[object]) -> list[str]:
+    texts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "reasoning":
+            continue
+        texts.extend(_collect_reasoning_texts(item.get("summary")))
+        texts.extend(_collect_reasoning_texts(item.get("content")))
+    return texts
+
+
 class OpenAIResponsesLLM(LLMClient):
     def __init__(self, config: OpenAIConfig, *, transport: Transport | None = None) -> None:
         self._config = config
@@ -191,6 +232,10 @@ class OpenAIResponsesLLM(LLMClient):
         output = payload_obj.get("output")
         if not isinstance(output, list):
             raise OpenAIError("missing or invalid output field in response")
+
+        reasoning_texts = _extract_reasoning_texts(output)
+        if reasoning_texts:
+            logger.debug("openai: reasoning_output=%s", "\n".join(reasoning_texts))
 
         texts: list[str] = []
         for item in output:

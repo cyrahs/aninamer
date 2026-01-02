@@ -189,6 +189,10 @@ def map_episodes_with_llm(
         videos=scan.videos,
         subtitles=scan.subtitles,
     )
+    logger.debug(
+        "episode_map: llm_prompt=%s",
+        [{"role": msg.role, "content": msg.content} for msg in messages],
+    )
     logger.info("episode_map: llm_call message_count=%s", len(messages))
     response = llm.chat(messages, temperature=0.0, max_output_tokens=max_output_tokens)
     logger.debug("episode_map: raw_llm_output=%s", response)

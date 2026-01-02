@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -80,6 +81,41 @@ def test_openai_llm_builds_responses_request_and_extracts_text() -> None:
     assert transport.last_headers is not None
     assert "Authorization" in transport.last_headers
     assert transport.last_headers["Authorization"].startswith("Bearer ")
+
+
+def test_openai_llm_logs_reasoning_output(caplog: pytest.LogCaptureFixture) -> None:
+    transport = FakeTransport(
+        reply_json={
+            "id": "resp_test",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Reasoning summary"}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": '{"tmdb": 1}'}],
+                },
+            ],
+        }
+    )
+    cfg = OpenAIConfig(
+        api_key="KEY",
+        model="gpt-5.2",
+        base_url="https://api.openai.com",
+        reasoning_effort=None,
+        timeout=30.0,
+        user_agent="aninamer-test/0.0",
+    )
+    llm = OpenAIResponsesLLM(cfg, transport=transport)
+
+    caplog.set_level(logging.DEBUG)
+
+    out = llm.chat([ChatMessage(role="user", content="hi")], max_output_tokens=64)
+    assert out.strip() == '{"tmdb": 1}'
+    assert "openai: reasoning_output" in caplog.text
+    assert "Reasoning summary" in caplog.text
 
 
 def test_openai_llm_includes_reasoning_effort_and_bumps_max_output_tokens() -> None:

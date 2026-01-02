@@ -16,6 +16,7 @@ from aninamer.errors import (
 )
 from aninamer.llm_client import LLMClient
 from aninamer.logging_utils import configure_logging
+from aninamer.name_clean import build_tmdb_query_variants
 from aninamer.openai_llm_client import (
     openai_llm_for_tmdb_id_from_env,
     openai_llm_from_env,
@@ -23,7 +24,7 @@ from aninamer.openai_llm_client import (
 from aninamer.plan import RenamePlan, build_rename_plan
 from aninamer.plan_io import read_rename_plan_json, write_rename_plan_json
 from aninamer.scanner import scan_series_dir
-from aninamer.tmdb_client import TMDBClient, TMDBError
+from aninamer.tmdb_client import TMDBClient, TMDBError, TvSearchResult
 from aninamer.tmdb_resolve import resolve_tmdb_tv_id_with_llm
 
 logger = logging.getLogger(__name__)
@@ -145,6 +146,40 @@ def _resolve_series_name(details_name: str | None, original: str | None) -> str:
     return "Unknown"
 
 
+def _search_tmdb_candidates(tmdb: TMDBClient, name: str) -> list[TvSearchResult]:
+    queries = build_tmdb_query_variants(name)
+    languages = ["zh-CN", "en-US", "ja-JP"]
+    logger.info("tmdb_search: start name=%s variants=%s", name, len(queries))
+
+    for query in queries:
+        candidates_by_id: dict[int, TvSearchResult] = {}
+        first_language_with_results: str | None = None
+        for language in languages:
+            results = tmdb.search_tv(query, language=language, page=1)
+            logger.info(
+                "tmdb_search: attempt query=%s language=%s results=%s",
+                query,
+                language,
+                len(results),
+            )
+            if results and first_language_with_results is None:
+                first_language_with_results = language
+            for candidate in results:
+                if candidate.id not in candidates_by_id:
+                    candidates_by_id[candidate.id] = candidate
+        if candidates_by_id:
+            logger.info(
+                "tmdb_search: success query=%s language=%s candidates=%s",
+                query,
+                first_language_with_results or languages[0],
+                len(candidates_by_id),
+            )
+            return list(candidates_by_id.values())
+
+    logger.error("tmdb_search: failed name=%s queries=%s", name, queries)
+    raise ValueError(f"no TMDB results for name '{name}' (attempted queries: {queries})")
+
+
 def _print_plan_summary(plan: RenamePlan, plan_file: Path) -> None:
     video_moves = sum(1 for move in plan.moves if move.kind == "video")
     subtitle_moves = sum(1 for move in plan.moves if move.kind == "subtitle")
@@ -189,10 +224,7 @@ def _build_plan_from_args(
     if args.tmdb is not None:
         tmdb_id = args.tmdb
     else:
-        query = series_dir.name
-        candidates = tmdb.search_tv(query, language="zh-CN", page=1)
-        if not candidates:
-            raise ValueError(f"no TMDB results for query '{query}'")
+        candidates = _search_tmdb_candidates(tmdb, series_dir.name)
         llm_for_id = (
             llm_for_tmdb_id_factory()
             if llm_for_tmdb_id_factory

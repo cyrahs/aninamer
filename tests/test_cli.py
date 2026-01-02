@@ -159,7 +159,7 @@ def test_cli_plan_uses_llm_for_tmdb_id(tmp_path: Path) -> None:
 
     assert rc == 0
     assert llm_for_id.calls == 1
-    assert tmdb.search_queries == [series_dir.name]
+    assert tmdb.search_queries == [series_dir.name] * 3
     plan = read_rename_plan_json(plan_path)
     assert plan.tmdb_id == 456
 
