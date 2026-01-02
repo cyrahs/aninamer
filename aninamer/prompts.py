@@ -105,6 +105,7 @@ def build_episode_mapping_messages(
     tmdb_id: int,
     series_name_zh_cn: str,
     year: int | None,
+    series_dir: str | None = None,
     season_episode_counts: Mapping[int, int],
     specials_zh: SeasonDetails | None,
     specials_en: SeasonDetails | None,
@@ -121,7 +122,9 @@ def build_episode_mapping_messages(
         "Include ONLY regular episodes (seasons >=1) and OVA/OAD specials in season 0. "
         "Omit OP/ED/PV/trailer/promo/NCOP/NCED/recap/credits/shorts/extras and any uncertain items. "
         "Never map two videos to the same episode range. "
-        "If duplicate releases exist, choose only one (prefer larger size)."
+        "If duplicate releases exist, choose only one (prefer larger size). "
+        "If the series_dir or file paths show explicit season markers "
+        "(S2, S02, Season 2, 第2季), treat them as strong signals for season selection."
     )
 
     lines: list[str] = []
@@ -136,6 +139,10 @@ def build_episode_mapping_messages(
     lines.append("for s>=1: 1..season_episode_counts[s]")
     lines.append("sort eps by v ascending")
     lines.append("u must contain only subtitle ids for that episode video; otherwise leave u empty")
+    lines.append(
+        "if series_dir or rel_path has explicit season marker (S2/S02/Season 2/第2季), "
+        "map to that season"
+    )
     lines.append("put OVA/OAD in S00")
     lines.append("prefer matching OVA/OAD using TMDB specials name/overview that mention OVA/OAD")
     lines.append("if no explicit OVA/OAD info, assume local OVA/OAD order matches TMDB specials order")
@@ -144,6 +151,8 @@ def build_episode_mapping_messages(
     lines.append(f"tmdb_id: {tmdb_id}")
     lines.append(f"series_name_zh_cn: {_clean_cell(series_name_zh_cn)}")
     lines.append(f"year: {_format_field(year)}")
+    if series_dir:
+        lines.append(f"series_dir: {_clean_cell(series_dir)}")
     lines.append("season_episode_counts:")
     for season_number in sorted(season_episode_counts.keys()):
         count = season_episode_counts[season_number]

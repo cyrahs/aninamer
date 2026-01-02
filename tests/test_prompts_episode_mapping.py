@@ -40,6 +40,7 @@ def test_build_episode_mapping_messages_includes_sections_and_sanitizes() -> Non
         tmdb_id=123,
         series_name_zh_cn="Series|Name\nX",
         year=2020,
+        series_dir="Series Name S2",
         season_episode_counts={0: 2, 1: 12},
         specials_zh=specials_zh,
         specials_en=specials_en,
@@ -53,12 +54,14 @@ def test_build_episode_mapping_messages_includes_sections_and_sanitizes() -> Non
     assert messages[0].role == "system"
     assert messages[1].role == "user"
     assert "Output ONLY valid JSON" in messages[0].content
+    assert "season markers" in messages[0].content
 
     user = messages[1].content
     assert '{"tmdb": <int>, "eps":' in user
     assert "tmdb_id: 123" in user
     assert "series_name_zh_cn: Series Name X" in user
     assert "year: 2020" in user
+    assert "series_dir: Series Name S2" in user
     assert "S00=2" in user
     assert "S01=12" in user
     assert "specials (season 0):" in user

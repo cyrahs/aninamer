@@ -187,6 +187,7 @@ def map_episodes_with_llm(
         tmdb_id=tmdb_id,
         series_name_zh_cn=series_name_zh_cn,
         year=year,
+        series_dir=scan.series_dir.name,
         season_episode_counts=season_episode_counts,
         specials_zh=specials_zh,
         specials_en=specials_en,

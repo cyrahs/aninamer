@@ -37,6 +37,7 @@ def test_build_episode_mapping_messages_contains_schema_and_files_and_seasons() 
         tmdb_id=123,
         series_name_zh_cn="测试动画",
         year=2020,
+        series_dir="测试动画 S2",
         season_episode_counts={0: 1, 1: 12},
         specials_zh=s00_zh,
         specials_en=s00_en,
@@ -54,6 +55,7 @@ def test_build_episode_mapping_messages_contains_schema_and_files_and_seasons() 
     assert "series_name_zh_cn: 测试动画" in user
     assert "S01=12" in user
     assert "S00=1" in user
+    assert "series_dir: 测试动画 S2" in user
     # file lines
     assert "1|Show - 01.mkv|100" in user
     assert "2|Show - OP.mkv|10" in user
