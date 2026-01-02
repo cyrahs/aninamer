@@ -740,7 +740,7 @@ def _run_monitor(
     while True:
         state, state_origin = _load_monitor_state(state_file)
         series_dirs = _discover_series_dirs(input_root)
-        logger.info("monitor: discovered count=%s", len(series_dirs))
+        logger.debug("monitor: discovered count=%s", len(series_dirs))
         resolved_map = {
             str(series_dir.resolve(strict=False)): series_dir
             for series_dir in series_dirs
