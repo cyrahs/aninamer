@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-import pytest
-
 from aninamer.cli import _default_plan_paths, _is_settled, main
 from aninamer.tmdb_client import SeasonSummary, TvDetails, TvSearchResult
 
