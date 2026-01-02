@@ -83,6 +83,7 @@ def test_cli_run_without_apply_writes_plan_only(tmp_path: Path) -> None:
     series_dir = tmp_path / "InputSeries"
     out_root = tmp_path / "Out"
     plan_file = tmp_path / "rename_plan.json"
+    log_path = tmp_path / "logs"
 
     _write(series_dir / "ep1.mkv", b"video")
     _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
@@ -93,6 +94,8 @@ def test_cli_run_without_apply_writes_plan_only(tmp_path: Path) -> None:
 
     rc = main(
         [
+            "--log-path",
+            str(log_path),
             "run",
             str(series_dir),
             "--out",
@@ -127,6 +130,7 @@ def test_cli_run_with_apply_moves_files_and_writes_rollback(tmp_path: Path) -> N
     out_root = tmp_path / "Out"
     plan_file = tmp_path / "rename_plan.json"
     rollback_file = tmp_path / "rollback_plan.json"
+    log_path = tmp_path / "logs"
 
     _write(series_dir / "ep1.mkv", b"video")
     _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
@@ -137,6 +141,8 @@ def test_cli_run_with_apply_moves_files_and_writes_rollback(tmp_path: Path) -> N
 
     rc = main(
         [
+            "--log-path",
+            str(log_path),
             "run",
             str(series_dir),
             "--out",

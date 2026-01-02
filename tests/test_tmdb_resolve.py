@@ -70,9 +70,13 @@ def test_parse_selected_tmdb_tv_id_rejects_extra_keys() -> None:
         parse_selected_tmdb_tv_id('{"tmdb": 1, "x": 2}', allowed_ids={1})
 
 
-def test_parse_selected_tmdb_tv_id_rejects_string_value() -> None:
+def test_parse_selected_tmdb_tv_id_accepts_string_value() -> None:
+    assert parse_selected_tmdb_tv_id('{"tmdb": "1"}', allowed_ids={1}) == 1
+
+
+def test_parse_selected_tmdb_tv_id_rejects_non_numeric_string() -> None:
     with pytest.raises(LLMOutputError):
-        parse_selected_tmdb_tv_id('{"tmdb": "1"}', allowed_ids={1})
+        parse_selected_tmdb_tv_id('{"tmdb": "abc"}', allowed_ids={1})
 
 
 def test_parse_selected_tmdb_tv_id_rejects_id_not_allowed() -> None:

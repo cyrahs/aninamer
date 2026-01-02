@@ -30,6 +30,12 @@ def parse_selected_tmdb_tv_id(text: str, *, allowed_ids: set[int]) -> int:
         raise LLMOutputError("expected object with only 'tmdb' key")
 
     tmdb_id = data.get("tmdb")
+    if isinstance(tmdb_id, str):
+        stripped = tmdb_id.strip()
+        if stripped.isdigit():
+            tmdb_id = int(stripped)
+        else:
+            raise LLMOutputError("tmdb must be int")
     if not isinstance(tmdb_id, int):
         raise LLMOutputError("tmdb must be int")
 
@@ -78,7 +84,7 @@ def resolve_tmdb_tv_id_with_llm(
         "tmdb_resolve: llm_call allowed_ids=%s",
         sorted(allowed_ids),
     )
-    response = llm.chat(messages, temperature=0.0, max_output_tokens=64)
+    response = llm.chat(messages, temperature=0.0, max_output_tokens=1024)
     logger.debug("tmdb_resolve: raw_llm_output=%s", response)
 
     selected_id = parse_selected_tmdb_tv_id(response, allowed_ids=allowed_ids)

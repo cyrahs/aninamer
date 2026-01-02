@@ -116,6 +116,7 @@ def test_cli_plan_falls_back_to_cleaned_query(tmp_path: Path) -> None:
     series_dir = tmp_path / "[DMG&SumiSora&VCB-Studio] Mahouka Koukou no Rettousei S3 [Ma10p_1080p]"
     out_root = tmp_path / "out"
     plan_file = tmp_path / "rename_plan.json"
+    log_path = tmp_path / "logs"
 
     _write(series_dir / "ep1.mkv", b"video")
 
@@ -129,6 +130,8 @@ def test_cli_plan_falls_back_to_cleaned_query(tmp_path: Path) -> None:
 
     rc = main(
         [
+            "--log-path",
+            str(log_path),
             "plan",
             str(series_dir),
             "--out",
@@ -153,6 +156,7 @@ def test_cli_plan_error_includes_attempted_queries(tmp_path: Path) -> None:
     series_dir = tmp_path / "[X] TotallyUnfindableTitle [1080p]"
     out_root = tmp_path / "out"
     plan_file = tmp_path / "rename_plan.json"
+    log_path = tmp_path / "logs"
 
     _write(series_dir / "ep1.mkv", b"video")
 
@@ -167,6 +171,8 @@ def test_cli_plan_error_includes_attempted_queries(tmp_path: Path) -> None:
 
     rc = main(
         [
+            "--log-path",
+            str(log_path),
             "plan",
             str(series_dir),
             "--out",

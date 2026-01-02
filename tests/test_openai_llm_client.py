@@ -73,7 +73,7 @@ def test_load_openai_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -
     assert config.reasoning_effort is None
 
 
-def test_openai_llm_for_tmdb_id_from_env_forces_no_reasoning(
+def test_openai_llm_for_tmdb_id_from_env_forces_low_reasoning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "key")
@@ -83,11 +83,11 @@ def test_openai_llm_for_tmdb_id_from_env_forces_no_reasoning(
     transport = CaptureTransport(response=_response_with_text("ok"))
     client = openai_llm_for_tmdb_id_from_env(transport=transport)
 
-    client.chat([ChatMessage(role="user", content="hello")], max_output_tokens=10)
+    client.chat([ChatMessage(role="user", content="hello")], max_output_tokens=512)
 
     body = json.loads(transport.last_body.decode("utf-8"))
-    assert body["max_output_tokens"] == 10
-    assert body["reasoning"] == {"effort": "none"}
+    assert body["max_output_tokens"] == 512
+    assert body["reasoning"] == {"effort": "low"}
 
 
 def test_chat_builds_request_and_parses_output() -> None:

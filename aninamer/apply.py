@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import heapq
 import logging
 from pathlib import Path
 import shutil
@@ -67,36 +68,98 @@ def _unique_temp_path(temp_dir: Path, base_name: str) -> Path:
         counter += 1
 
 
-def apply_rename_plan(plan: RenamePlan, *, dry_run: bool = True) -> ApplyResult:
-    logger.info(
-        "apply: start dry_run=%s move_count=%s", dry_run, len(plan.moves)
+def _single_stage_order(
+    moves_to_apply: list[tuple[PlannedMove, Path, Path]]
+) -> list[int]:
+    src_to_idx: dict[Path, int] = {}
+    for idx, (_move, src, _dst) in enumerate(moves_to_apply):
+        if src not in src_to_idx:
+            src_to_idx[src] = idx
+
+    adjacency: list[list[int]] = [[] for _ in range(len(moves_to_apply))]
+    indegree = [0] * len(moves_to_apply)
+    for idx, (_move, _src, dst) in enumerate(moves_to_apply):
+        dep_idx = src_to_idx.get(dst)
+        if dep_idx is None or dep_idx == idx:
+            continue
+        adjacency[dep_idx].append(idx)
+        indegree[idx] += 1
+
+    heap: list[int] = [idx for idx, degree in enumerate(indegree) if degree == 0]
+    heapq.heapify(heap)
+    order: list[int] = []
+    while heap:
+        idx = heapq.heappop(heap)
+        order.append(idx)
+        for neighbor in adjacency[idx]:
+            indegree[neighbor] -= 1
+            if indegree[neighbor] == 0:
+                heapq.heappush(heap, neighbor)
+
+    if len(order) != len(moves_to_apply):
+        raise ApplyError("cycle detected in rename plan; re-run with --two-stage")
+    return order
+
+
+def _apply_single_stage(
+    plan: RenamePlan,
+    moves_to_apply: list[tuple[PlannedMove, Path, Path]],
+) -> ApplyResult:
+    order = _single_stage_order(moves_to_apply)
+    preview = [moves_to_apply[idx][2] for idx in order[:3]]
+    logger.debug(
+        "apply: single_stage_order move_count=%s dst_preview=%s",
+        len(order),
+        [str(path) for path in preview],
     )
 
-    output_root = _resolve_path(plan.output_root)
-    sources_set = {_resolve_path(move.src) for move in plan.moves}
-    moves_to_apply: list[tuple[PlannedMove, Path, Path]] = []
+    applied: list[tuple[PlannedMove, Path, Path]] = []
+    try:
+        for idx in order:
+            move, src, dst = moves_to_apply[idx]
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            logger.debug("apply: single_move src=%s dst=%s", src, dst)
+            shutil.move(str(src), str(dst))
+            applied.append((move, src, dst))
 
-    for move in plan.moves:
-        src = _resolve_path(move.src)
-        dst = _resolve_path(move.dst)
-        if not src.exists() or not src.is_file():
-            raise ApplyError(f"source {src} does not exist or is not a file")
-        _validate_parent_creatable(dst)
-        if dst.exists() and dst not in sources_set:
-            raise ApplyError(f"destination already exists: {dst}")
-        if src == dst:
-            continue
-        moves_to_apply.append((move, src, dst))
-
-    if dry_run:
-        logger.info("apply: done applied_count=%s", 0)
+        applied_moves = tuple(
+            AppliedMove(
+                src=move.src,
+                dst=move.dst,
+                kind=move.kind,
+                src_id=move.src_id,
+            )
+            for move, _src, _dst in applied
+        )
+        logger.info("apply: done applied_count=%s", len(applied_moves))
         return ApplyResult(
-            dry_run=True,
-            applied=(),
+            dry_run=False,
+            applied=applied_moves,
             rollback_moves=build_rollback_moves(plan),
             temp_dir=None,
         )
+    except Exception as exc:
+        logger.exception("apply: failed; attempting rollback")
+        for _move, src, dst in reversed(applied):
+            try:
+                if dst.exists():
+                    logger.debug("apply: rollback_move src=%s dst=%s", dst, src)
+                    shutil.move(str(dst), str(src))
+            except Exception:
+                logger.debug(
+                    "apply: rollback_move failed src=%s dst=%s",
+                    dst,
+                    src,
+                    exc_info=True,
+                )
+        raise ApplyError(f"apply failed: {exc}") from exc
 
+
+def _apply_two_stage(
+    plan: RenamePlan,
+    moves_to_apply: list[tuple[PlannedMove, Path, Path]],
+    output_root: Path,
+) -> ApplyResult:
     try:
         output_root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -174,3 +237,52 @@ def apply_rename_plan(plan: RenamePlan, *, dry_run: bool = True) -> ApplyResult:
                     exc_info=True,
                 )
         raise ApplyError(f"apply failed: {exc}") from exc
+
+
+def apply_rename_plan(
+    plan: RenamePlan, *, dry_run: bool = True, two_stage: bool = False
+) -> ApplyResult:
+    logger.info(
+        "apply: start dry_run=%s two_stage=%s move_count=%s",
+        dry_run,
+        two_stage,
+        len(plan.moves),
+    )
+
+    output_root = _resolve_path(plan.output_root)
+    sources_set = {_resolve_path(move.src) for move in plan.moves}
+    moves_to_apply: list[tuple[PlannedMove, Path, Path]] = []
+
+    for move in plan.moves:
+        src = _resolve_path(move.src)
+        dst = _resolve_path(move.dst)
+        if not src.exists() or not src.is_file():
+            raise ApplyError(f"source {src} does not exist or is not a file")
+        _validate_parent_creatable(dst)
+        if dst.exists() and dst not in sources_set:
+            raise ApplyError(f"destination already exists: {dst}")
+        if src == dst:
+            continue
+        moves_to_apply.append((move, src, dst))
+
+    if dry_run:
+        logger.info("apply: done applied_count=%s", 0)
+        return ApplyResult(
+            dry_run=True,
+            applied=(),
+            rollback_moves=build_rollback_moves(plan),
+            temp_dir=None,
+        )
+
+    if not moves_to_apply:
+        logger.info("apply: done applied_count=%s", 0)
+        return ApplyResult(
+            dry_run=False,
+            applied=(),
+            rollback_moves=build_rollback_moves(plan),
+            temp_dir=None,
+        )
+
+    if two_stage:
+        return _apply_two_stage(plan, moves_to_apply, output_root)
+    return _apply_single_stage(plan, moves_to_apply)

@@ -7,7 +7,7 @@ from typing import Sequence
 
 import pytest
 
-from aninamer.cli import main
+from aninamer.cli import _default_plan_paths, main
 from aninamer.llm_client import ChatMessage
 from aninamer.tmdb_client import Episode, SeasonDetails, SeasonSummary, TvDetails, TvSearchResult
 
@@ -91,6 +91,7 @@ def test_cli_run_dry_run_default_writes_plan_but_does_not_move(
     out_root = tmp_path / "Out"
     plan_file = tmp_path / "rename_plan.json"
     rollback_file = tmp_path / "rollback_plan.json"
+    log_path = tmp_path / "logs"
 
     _write(series_dir / "ep1.mkv", b"video")
     _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
@@ -101,6 +102,8 @@ def test_cli_run_dry_run_default_writes_plan_but_does_not_move(
 
     rc = main(
         [
+            "--log-path",
+            str(log_path),
             "run",
             str(series_dir),
             "--out",
@@ -145,6 +148,7 @@ def test_cli_run_apply_applies_moves(tmp_path: Path) -> None:
     series_dir = tmp_path / "InputSeries"
     out_root = tmp_path / "Out"
     plan_file = tmp_path / "rename_plan.json"
+    log_path = tmp_path / "logs"
 
     _write(series_dir / "ep1.mkv", b"video")
     _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
@@ -155,6 +159,8 @@ def test_cli_run_apply_applies_moves(tmp_path: Path) -> None:
 
     rc = main(
         [
+            "--log-path",
+            str(log_path),
             "run",
             str(series_dir),
             "--out",
@@ -178,5 +184,5 @@ def test_cli_run_apply_applies_moves(tmp_path: Path) -> None:
     assert not (series_dir / "ep1.mkv").exists()
     assert not (series_dir / "ep1.ass").exists()
 
-    rollback_file = plan_file.with_name("rollback_plan.json")
+    _, rollback_file = _default_plan_paths(log_path, series_dir)
     assert rollback_file.exists()

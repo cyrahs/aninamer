@@ -104,7 +104,7 @@ def test_apply_swaps_files_with_staging(tmp_path: Path) -> None:
         ),
     )
 
-    result = apply_rename_plan(plan, dry_run=False)
+    result = apply_rename_plan(plan, dry_run=False, two_stage=True)
 
     assert result.dry_run is False
     assert file_a.read_bytes() == b"b"
@@ -149,6 +149,35 @@ def test_apply_raises_on_existing_destination_not_source(
     assert dest.exists()
 
 
+def test_apply_single_stage_cycle_requires_two_stage(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    file_a = root / "a.mkv"
+    file_b = root / "b.mkv"
+    file_a.write_bytes(b"a")
+    file_b.write_bytes(b"b")
+
+    plan = _plan(
+        root,
+        root,
+        (
+            PlannedMove(
+                src=file_a, dst=file_b, kind="video", src_id=1
+            ),
+            PlannedMove(
+                src=file_b, dst=file_a, kind="video", src_id=2
+            ),
+        ),
+    )
+
+    with pytest.raises(ApplyError) as excinfo:
+        apply_rename_plan(plan, dry_run=False)
+
+    assert "--two-stage" in str(excinfo.value)
+    assert file_a.read_bytes() == b"a"
+    assert file_b.read_bytes() == b"b"
+
+
 def test_apply_rolls_back_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "root"
     root.mkdir()
@@ -180,7 +209,7 @@ def test_apply_rolls_back_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(apply_module.shutil, "move", flaky_move)
 
     with pytest.raises(ApplyError):
-        apply_module.apply_rename_plan(plan, dry_run=False)
+        apply_module.apply_rename_plan(plan, dry_run=False, two_stage=True)
 
     assert src.read_bytes() == b"video"
     assert not dest.exists()

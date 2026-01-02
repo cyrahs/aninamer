@@ -64,6 +64,7 @@ def test_apply_moves_files_and_can_rollback(tmp_path: Path) -> None:
 
     res = apply_rename_plan(plan, dry_run=False)
     assert res.dry_run is False
+    assert res.temp_dir is None
     assert dst_v.exists()
     assert dst_s.exists()
     assert not src_v.exists()
@@ -86,7 +87,7 @@ def test_apply_moves_files_and_can_rollback(tmp_path: Path) -> None:
     assert not dst_s.exists()
 
 
-def test_apply_handles_swap_chain_with_staging(tmp_path: Path) -> None:
+def test_apply_handles_dependency_chain_single_stage(tmp_path: Path) -> None:
     series_dir = tmp_path / "series"
     out_root = tmp_path / "out"
 

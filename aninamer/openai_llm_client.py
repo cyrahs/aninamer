@@ -270,5 +270,5 @@ def openai_llm_for_tmdb_id_from_env(
     *, transport: Transport | None = None
 ) -> OpenAIResponsesLLM:
     config = load_openai_config_from_env()
-    config = replace(config, reasoning_effort="none")
+    config = replace(config, reasoning_effort="low")
     return OpenAIResponsesLLM(config, transport=transport)

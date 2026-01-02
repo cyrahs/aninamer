@@ -105,13 +105,17 @@ def test_parse_selected_tmdb_tv_id_accepts_code_fence() -> None:
     assert parse_selected_tmdb_tv_id(text, allowed_ids={111}) == 111
 
 
+def test_parse_selected_tmdb_tv_id_accepts_string_value() -> None:
+    assert parse_selected_tmdb_tv_id('{"tmdb": "10"}', allowed_ids={10}) == 10
+
+
 @pytest.mark.parametrize(
     "text, match",
     [
         ("not json", "invalid json"),
         ("[]", "expected JSON object"),
         ('{"tmdb": 1, "extra": 2}', "only 'tmdb'"),
-        ('{"tmdb": "1"}', "tmdb must be int"),
+        ('{"tmdb": "abc"}', "tmdb must be int"),
         ('{"tmdb": 2}', "not in allowed"),
     ],
 )
@@ -149,7 +153,7 @@ def test_resolve_tmdb_tv_id_with_llm_calls_and_truncates() -> None:
     assert len(llm.calls) == 1
     _messages, temperature, max_output_tokens = llm.calls[0]
     assert temperature == 0.0
-    assert max_output_tokens == 64
+    assert max_output_tokens == 1024
 
 
 def test_resolve_tmdb_tv_id_with_llm_rejects_unlisted_id() -> None:

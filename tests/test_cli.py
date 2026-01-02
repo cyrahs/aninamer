@@ -6,7 +6,7 @@ from typing import Sequence
 
 import pytest
 
-from aninamer.cli import main
+from aninamer.cli import _default_plan_paths, main
 from aninamer.plan import PlannedMove, RenamePlan
 from aninamer.plan_io import read_rename_plan_json, write_rename_plan_json
 from aninamer.tmdb_client import SeasonDetails, SeasonSummary, TvDetails, TvSearchResult
@@ -68,6 +68,7 @@ def test_cli_plan_writes_plan_and_summary(tmp_path: Path, capsys: pytest.Capture
     _write(series_dir / "ep1.ass", b"sub")
     out_root = tmp_path / "out"
     plan_path = tmp_path / "plans" / "rename_plan.json"
+    log_path = tmp_path / "logs"
 
     details = TvDetails(
         id=123,
@@ -83,6 +84,8 @@ def test_cli_plan_writes_plan_and_summary(tmp_path: Path, capsys: pytest.Capture
 
     rc = main(
         [
+            "--log-path",
+            str(log_path),
             "plan",
             str(series_dir),
             "--out",
@@ -111,6 +114,7 @@ def test_cli_plan_uses_llm_for_tmdb_id(tmp_path: Path) -> None:
     _write(series_dir / "ep1.mkv", b"video")
     out_root = tmp_path / "out"
     plan_path = tmp_path / "rename_plan.json"
+    log_path = tmp_path / "logs"
 
     search_results = [
         TvSearchResult(
@@ -145,6 +149,8 @@ def test_cli_plan_uses_llm_for_tmdb_id(tmp_path: Path) -> None:
 
     rc = main(
         [
+            "--log-path",
+            str(log_path),
             "plan",
             str(series_dir),
             "--out",
@@ -182,10 +188,13 @@ def test_cli_apply_writes_rollback_plan(tmp_path: Path, capsys: pytest.CaptureFi
     )
     plan_path = tmp_path / "rename_plan.json"
     rollback_path = tmp_path / "rollback_plan.json"
+    log_path = tmp_path / "logs"
     write_rename_plan_json(plan_path, plan)
 
     rc = main(
         [
+            "--log-path",
+            str(log_path),
             "apply",
             str(plan_path),
             "--dry-run",
@@ -202,3 +211,82 @@ def test_cli_apply_writes_rollback_plan(tmp_path: Path, capsys: pytest.CaptureFi
 
     out = capsys.readouterr().out
     assert str(rollback_path) in out
+
+
+def test_cli_plan_defaults_to_log_path(tmp_path: Path) -> None:
+    series_dir = tmp_path / "Series"
+    _write(series_dir / "ep1.mkv", b"video")
+    out_root = tmp_path / "out"
+    log_path = tmp_path / "logs"
+
+    details = TvDetails(
+        id=123,
+        name="Show",
+        original_name=None,
+        first_air_date="2020-01-01",
+        seasons=[SeasonSummary(season_number=1, episode_count=1)],
+    )
+    tmdb = FakeTMDB(search_results=[], details=details)
+    mapping_llm = FakeLLM(
+        reply='{"tmdb":123,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[]}]}'
+    )
+
+    rc = main(
+        [
+            "--log-path",
+            str(log_path),
+            "plan",
+            str(series_dir),
+            "--out",
+            str(out_root),
+            "--tmdb",
+            "123",
+        ],
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_mapping_factory=lambda: mapping_llm,
+    )
+
+    assert rc == 0
+    plan_path, rollback_path = _default_plan_paths(log_path, series_dir)
+    assert plan_path.exists()
+    assert not rollback_path.exists()
+
+
+def test_cli_plan_rejects_plan_file_under_series_dir(tmp_path: Path) -> None:
+    series_dir = tmp_path / "Series"
+    _write(series_dir / "ep1.mkv", b"video")
+    out_root = tmp_path / "out"
+    plan_path = series_dir / "rename_plan.json"
+    log_path = tmp_path / "logs"
+
+    details = TvDetails(
+        id=123,
+        name="Show",
+        original_name=None,
+        first_air_date="2020-01-01",
+        seasons=[SeasonSummary(season_number=1, episode_count=1)],
+    )
+    tmdb = FakeTMDB(search_results=[], details=details)
+    mapping_llm = FakeLLM(
+        reply='{"tmdb":123,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[]}]}'
+    )
+
+    rc = main(
+        [
+            "--log-path",
+            str(log_path),
+            "plan",
+            str(series_dir),
+            "--out",
+            str(out_root),
+            "--tmdb",
+            "123",
+            "--plan-file",
+            str(plan_path),
+        ],
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_mapping_factory=lambda: mapping_llm,
+    )
+
+    assert rc != 0
+    assert not plan_path.exists()

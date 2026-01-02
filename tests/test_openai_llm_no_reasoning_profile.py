@@ -48,12 +48,12 @@ def test_openai_llm_for_tmdb_id_ignores_env_reasoning_effort(monkeypatch: pytest
     transport = CaptureTransport()
     llm = openai_llm_for_tmdb_id_from_env(transport=transport)
 
-    _ = llm.chat([ChatMessage(role="user", content='Return {"tmdb": 1} only.')], max_output_tokens=64)
+    _ = llm.chat([ChatMessage(role="user", content='Return {"tmdb": 1} only.')], max_output_tokens=512)
 
     body = json.loads((transport.last_body or b"{}").decode("utf-8"))
-    assert body["reasoning"]["effort"] == "none"
+    assert body["reasoning"]["effort"] == "low"
     # since effort == none, the client should NOT bump max_output_tokens
-    assert body["max_output_tokens"] == 64
+    assert body["max_output_tokens"] == 512
 
 
 def test_openai_llm_from_env_still_respects_env_reasoning_effort(monkeypatch: pytest.MonkeyPatch) -> None:
