@@ -47,6 +47,10 @@ Codex should implement the project incrementally, one step at a time, with **pyt
    - Prefer matching by TMDB Season 0 (specials) title/overview that mention OVA/OAD.
    - If no explicit OVA/OAD hints: assume **local OVA/OAD order matches TMDB specials order**.
 
+8. **No access to .env files**
+   - Never read, modify, or access `.env` files.
+   - These files contain sensitive credentials and configuration that must remain untouched.
+
 ---
 
 ## 1) Repository structure (target)
