@@ -26,12 +26,10 @@ class CaptureTransport:
         self.last_headers = headers
 
         payload = {
-            "id": "resp_test",
-            "output": [
+            "id": "chatcmpl-test",
+            "choices": [
                 {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": '{"tmdb": 1}'}],
+                    "message": {"role": "assistant", "content": '{"tmdb": 1}'},
                 }
             ],
         }
@@ -39,7 +37,7 @@ class CaptureTransport:
 
 
 def test_openai_llm_for_tmdb_id_ignores_env_reasoning_effort(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Env includes reasoning=high, but TMDB-id client must force none.
+    # Env includes reasoning=high, but TMDB-id client must force low.
     monkeypatch.setenv("OPENAI_API_KEY", "KEY")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5.2")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com")
@@ -51,9 +49,8 @@ def test_openai_llm_for_tmdb_id_ignores_env_reasoning_effort(monkeypatch: pytest
     _ = llm.chat([ChatMessage(role="user", content='Return {"tmdb": 1} only.')], max_output_tokens=512)
 
     body = json.loads((transport.last_body or b"{}").decode("utf-8"))
-    assert body["reasoning"]["effort"] == "low"
-    # since effort == none, the client should NOT bump max_output_tokens
-    assert body["max_output_tokens"] == 512
+    assert body["reasoning_effort"] == "low"
+    assert body["max_tokens"] == 512
 
 
 def test_openai_llm_from_env_still_respects_env_reasoning_effort(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,6 +65,5 @@ def test_openai_llm_from_env_still_respects_env_reasoning_effort(monkeypatch: py
     _ = llm.chat([ChatMessage(role="user", content="hi")], max_output_tokens=64)
 
     body = json.loads((transport.last_body or b"{}").decode("utf-8"))
-    assert body["reasoning"]["effort"] == "high"
-    # bumped when reasoning enabled
-    assert body["max_output_tokens"] >= 256
+    assert body["reasoning_effort"] == "high"
+    assert body["max_tokens"] == 64

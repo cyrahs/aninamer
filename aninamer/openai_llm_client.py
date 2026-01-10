@@ -71,20 +71,24 @@ def _default_transport(
         with request.urlopen(req, timeout=timeout) as resp:
             resp_body = resp.read()
             resp_headers = {key: value for key, value in resp.headers.items()}
-            return HttpResponse(status=resp.status, body=resp_body, headers=resp_headers)
+            return HttpResponse(
+                status=resp.status, body=resp_body, headers=resp_headers
+            )
     except url_error.HTTPError as exc:
         resp_body = exc.read()
         resp_headers = {key: value for key, value in exc.headers.items()}
         return HttpResponse(status=exc.code, body=resp_body, headers=resp_headers)
-    except Exception as exc:  # pragma: no cover - guardrail for unexpected transport errors
+    except (
+        Exception
+    ) as exc:  # pragma: no cover - guardrail for unexpected transport errors
         raise OpenAIError(f"transport error: {exc}") from exc
 
 
 def _endpoint_for_base_url(base_url: str) -> str:
     base = base_url.rstrip("/")
     if base.endswith("/v1"):
-        return f"{base}/responses"
-    return f"{base}/v1/responses"
+        return f"{base}/chat/completions"
+    return f"{base}/v1/chat/completions"
 
 
 def _parse_response_json(body: bytes) -> dict[str, object]:
@@ -119,49 +123,10 @@ def _extract_error_message(body: bytes) -> str:
     return "unknown error"
 
 
-def _collect_reasoning_texts(value: object) -> list[str]:
-    texts: list[str] = []
-    if isinstance(value, str):
-        cleaned = value.strip()
-        if cleaned:
-            texts.append(cleaned)
-        return texts
-    if isinstance(value, dict):
-        text = value.get("text")
-        if isinstance(text, str):
-            cleaned = text.strip()
-            if cleaned:
-                texts.append(cleaned)
-        summary = value.get("summary")
-        if isinstance(summary, str):
-            cleaned = summary.strip()
-            if cleaned:
-                texts.append(cleaned)
-        content = value.get("content")
-        if content is not None:
-            texts.extend(_collect_reasoning_texts(content))
-        return texts
-    if isinstance(value, list):
-        for item in value:
-            texts.extend(_collect_reasoning_texts(item))
-        return texts
-    return texts
-
-
-def _extract_reasoning_texts(output: Sequence[object]) -> list[str]:
-    texts: list[str] = []
-    for item in output:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") != "reasoning":
-            continue
-        texts.extend(_collect_reasoning_texts(item.get("summary")))
-        texts.extend(_collect_reasoning_texts(item.get("content")))
-    return texts
-
-
-class OpenAIResponsesLLM(LLMClient):
-    def __init__(self, config: OpenAIConfig, *, transport: Transport | None = None) -> None:
+class OpenAIChatCompletionsLLM(LLMClient):
+    def __init__(
+        self, config: OpenAIConfig, *, transport: Transport | None = None
+    ) -> None:
         self._config = config
         self._transport = transport or _default_transport
 
@@ -172,46 +137,29 @@ class OpenAIResponsesLLM(LLMClient):
         temperature: float = 0.0,
         max_output_tokens: int = 256,
     ) -> str:
-        del temperature
-
-        system_messages = [msg.content for msg in messages if msg.role == "system"]
-        instructions = "\n\n".join(system_messages)
-        has_instructions = any(content.strip() for content in system_messages)
-
-        input_items = [
-            {"role": msg.role, "content": msg.content}
-            for msg in messages
-            if msg.role != "system"
-        ]
-
-        reasoning_effort = self._config.reasoning_effort
-        if reasoning_effort is not None:
-            reasoning_effort = reasoning_effort.strip()
-            if reasoning_effort == "":
-                reasoning_effort = None
-
-        effective_max_output_tokens = max_output_tokens
-        if reasoning_effort is not None and reasoning_effort.lower() != "none":
-            effective_max_output_tokens = max(max_output_tokens, 256)
+        # Build messages array for Chat Completions API
+        chat_messages = [{"role": msg.role, "content": msg.content} for msg in messages]
 
         payload: dict[str, object] = {
             "model": self._config.model,
-            "input": input_items,
-            "max_output_tokens": effective_max_output_tokens,
-            "store": False,
+            "messages": chat_messages,
+            "max_tokens": max_output_tokens,
+            "temperature": temperature,
         }
-        if has_instructions:
-            payload["instructions"] = instructions
-        if reasoning_effort is not None:
-            payload["reasoning"] = {"effort": reasoning_effort}
+
+        # Add reasoning_effort for reasoning models (o1, o3, etc.)
+        reasoning_effort = self._config.reasoning_effort
+        if reasoning_effort is not None and reasoning_effort.strip():
+            payload["reasoning_effort"] = reasoning_effort.strip()
 
         body = json.dumps(payload).encode("utf-8")
         endpoint = _endpoint_for_base_url(self._config.base_url)
         logger.info(
-            "openai: request model=%s endpoint=%s effective_max_output_tokens=%s reasoning_effort=%s message_count=%s",
+            "openai: request model=%s endpoint=%s max_tokens=%s temperature=%s reasoning_effort=%s message_count=%s",
             self._config.model,
             endpoint,
-            effective_max_output_tokens,
+            max_output_tokens,
+            temperature,
             reasoning_effort,
             len(messages),
         )
@@ -229,46 +177,42 @@ class OpenAIResponsesLLM(LLMClient):
             raise OpenAIError(f"OpenAI API error {response.status}: {message}")
 
         payload_obj = _parse_response_json(response.body)
-        output = payload_obj.get("output")
-        if not isinstance(output, list):
-            raise OpenAIError("missing or invalid output field in response")
 
-        reasoning_texts = _extract_reasoning_texts(output)
-        if reasoning_texts:
-            logger.debug("openai: reasoning_output=%s", "\n".join(reasoning_texts))
+        # Parse Chat Completions response format
+        choices = payload_obj.get("choices")
+        if not isinstance(choices, list) or len(choices) == 0:
+            raise OpenAIError("missing or invalid choices field in response")
 
-        texts: list[str] = []
-        for item in output:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") != "message":
-                continue
-            content = item.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") == "output_text":
-                    text = block.get("text")
-                    if isinstance(text, str):
-                        texts.append(text)
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            raise OpenAIError("invalid choice format in response")
 
-        result = "\n".join(texts).strip()
+        message_obj = first_choice.get("message")
+        if not isinstance(message_obj, dict):
+            raise OpenAIError("missing message in response choice")
+
+        content = message_obj.get("content")
+        if not isinstance(content, str):
+            raise OpenAIError("missing or invalid content in response message")
+
+        result = content.strip()
         logger.debug("openai: raw_output_text=%s", result)
         if not result:
-            raise OpenAIError("no output_text found in response")
+            raise OpenAIError("empty content in response")
         return result
 
 
-def openai_llm_from_env(*, transport: Transport | None = None) -> OpenAIResponsesLLM:
+def openai_llm_from_env(
+    *, transport: Transport | None = None
+) -> OpenAIChatCompletionsLLM:
     config = load_openai_config_from_env()
-    return OpenAIResponsesLLM(config, transport=transport)
+    return OpenAIChatCompletionsLLM(config, transport=transport)
 
 
 def openai_llm_for_tmdb_id_from_env(
     *, transport: Transport | None = None
-) -> OpenAIResponsesLLM:
+) -> OpenAIChatCompletionsLLM:
     config = load_openai_config_from_env()
+    # Use low reasoning effort for simple TMDB ID selection
     config = replace(config, reasoning_effort="low")
-    return OpenAIResponsesLLM(config, transport=transport)
+    return OpenAIChatCompletionsLLM(config, transport=transport)
