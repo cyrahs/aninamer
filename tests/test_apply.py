@@ -40,12 +40,8 @@ def test_build_rollback_moves_preserves_order(tmp_path: Path) -> None:
     rollback = build_rollback_moves(plan)
 
     assert rollback == (
-        PlannedMove(
-            src=move1.dst, dst=move1.src, kind=move1.kind, src_id=move1.src_id
-        ),
-        PlannedMove(
-            src=move2.dst, dst=move2.src, kind=move2.kind, src_id=move2.src_id
-        ),
+        PlannedMove(src=move1.dst, dst=move1.src, kind=move1.kind, src_id=move1.src_id),
+        PlannedMove(src=move2.dst, dst=move2.src, kind=move2.kind, src_id=move2.src_id),
     )
 
 
@@ -56,20 +52,11 @@ def test_apply_dry_run_does_not_touch_fs(tmp_path: Path) -> None:
     src.write_bytes(b"video")
 
     output_root = tmp_path / "out"
-    dest = (
-        output_root
-        / "Series {tmdb-1}"
-        / "S01"
-        / "Series S01E01.mkv"
-    )
+    dest = output_root / "Series {tmdb-1}" / "S01" / "Series S01E01.mkv"
     plan = _plan(
         series_dir,
         output_root,
-        (
-            PlannedMove(
-                src=src, dst=dest, kind="video", src_id=1
-            ),
-        ),
+        (PlannedMove(src=src, dst=dest, kind="video", src_id=1),),
     )
 
     result = apply_rename_plan(plan, dry_run=True)
@@ -95,12 +82,8 @@ def test_apply_swaps_files_with_staging(tmp_path: Path) -> None:
         root,
         root,
         (
-            PlannedMove(
-                src=file_a, dst=file_b, kind="video", src_id=1
-            ),
-            PlannedMove(
-                src=file_b, dst=file_a, kind="video", src_id=2
-            ),
+            PlannedMove(src=file_a, dst=file_b, kind="video", src_id=1),
+            PlannedMove(src=file_b, dst=file_a, kind="video", src_id=2),
         ),
     )
 
@@ -123,23 +106,14 @@ def test_apply_raises_on_existing_destination_not_source(
     src.write_bytes(b"video")
 
     output_root = tmp_path / "out"
-    dest = (
-        output_root
-        / "Series {tmdb-1}"
-        / "S01"
-        / "Series S01E01.mkv"
-    )
+    dest = output_root / "Series {tmdb-1}" / "S01" / "Series S01E01.mkv"
     dest.parent.mkdir(parents=True)
     dest.write_bytes(b"existing")
 
     plan = _plan(
         series_dir,
         output_root,
-        (
-            PlannedMove(
-                src=src, dst=dest, kind="video", src_id=1
-            ),
-        ),
+        (PlannedMove(src=src, dst=dest, kind="video", src_id=1),),
     )
 
     with pytest.raises(ApplyError):
@@ -161,12 +135,8 @@ def test_apply_single_stage_cycle_requires_two_stage(tmp_path: Path) -> None:
         root,
         root,
         (
-            PlannedMove(
-                src=file_a, dst=file_b, kind="video", src_id=1
-            ),
-            PlannedMove(
-                src=file_b, dst=file_a, kind="video", src_id=2
-            ),
+            PlannedMove(src=file_a, dst=file_b, kind="video", src_id=1),
+            PlannedMove(src=file_b, dst=file_a, kind="video", src_id=2),
         ),
     )
 
@@ -178,7 +148,9 @@ def test_apply_single_stage_cycle_requires_two_stage(tmp_path: Path) -> None:
     assert file_b.read_bytes() == b"b"
 
 
-def test_apply_rolls_back_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_apply_rolls_back_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "root"
     root.mkdir()
     src = root / "a.mkv"
@@ -188,11 +160,7 @@ def test_apply_rolls_back_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyP
     plan = _plan(
         root,
         root,
-        (
-            PlannedMove(
-                src=src, dst=dest, kind="video", src_id=1
-            ),
-        ),
+        (PlannedMove(src=src, dst=dest, kind="video", src_id=1),),
     )
 
     import aninamer.apply as apply_module
@@ -200,7 +168,9 @@ def test_apply_rolls_back_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyP
     real_move = apply_module.shutil.move
     call_count = {"count": 0}
 
-    def flaky_move(src_path: str, dst_path: str, *args: object, **kwargs: object) -> str:
+    def flaky_move(
+        src_path: str, dst_path: str, *args: object, **kwargs: object
+    ) -> str:
         call_count["count"] += 1
         if call_count["count"] == 2:
             raise OSError("boom")
@@ -231,11 +201,7 @@ def test_apply_skips_noop_moves(tmp_path: Path) -> None:
     plan = _plan(
         root,
         root,
-        (
-            PlannedMove(
-                src=src, dst=src, kind="video", src_id=1
-            ),
-        ),
+        (PlannedMove(src=src, dst=src, kind="video", src_id=1),),
     )
 
     result = apply_rename_plan(plan, dry_run=False)

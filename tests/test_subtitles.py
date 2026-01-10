@@ -49,14 +49,8 @@ def test_detect_variant_from_filename_traditional_ascii(name: str) -> None:
 
 
 def test_detect_variant_from_filename_chinese_tokens() -> None:
-    assert (
-        detect_variant_from_filename("动画_简体.ass")
-        == ChineseSubtitleVariant.CHS
-    )
-    assert (
-        detect_variant_from_filename("动画-繁体.srt")
-        == ChineseSubtitleVariant.CHT
-    )
+    assert detect_variant_from_filename("动画_简体.ass") == ChineseSubtitleVariant.CHS
+    assert detect_variant_from_filename("动画-繁体.srt") == ChineseSubtitleVariant.CHT
 
 
 def test_detect_variant_from_filename_no_hint() -> None:

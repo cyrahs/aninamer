@@ -69,7 +69,7 @@ def _unique_temp_path(temp_dir: Path, base_name: str) -> Path:
 
 
 def _single_stage_order(
-    moves_to_apply: list[tuple[PlannedMove, Path, Path]]
+    moves_to_apply: list[tuple[PlannedMove, Path, Path]],
 ) -> list[int]:
     src_to_idx: dict[Path, int] = {}
     for idx, (_move, src, _dst) in enumerate(moves_to_apply):
@@ -163,9 +163,7 @@ def _apply_two_stage(
     try:
         output_root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise ApplyError(
-            f"failed to create output_root {output_root}: {exc}"
-        ) from exc
+        raise ApplyError(f"failed to create output_root {output_root}: {exc}") from exc
 
     temp_dir = output_root / f".aninamer_tmp_{uuid.uuid4().hex}"
     try:
@@ -220,14 +218,10 @@ def _apply_two_stage(
         for move, src, dst, tmp_path in reversed(staged):
             try:
                 if tmp_path.exists():
-                    logger.info(
-                        "apply: rollback_move src=%s dst=%s", tmp_path, src
-                    )
+                    logger.info("apply: rollback_move src=%s dst=%s", tmp_path, src)
                     shutil.move(str(tmp_path), str(src))
                 elif dst.exists():
-                    logger.info(
-                        "apply: rollback_move src=%s dst=%s", dst, src
-                    )
+                    logger.info("apply: rollback_move src=%s dst=%s", dst, src)
                     shutil.move(str(dst), str(src))
             except Exception:
                 logger.info(
