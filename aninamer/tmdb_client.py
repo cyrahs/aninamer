@@ -23,7 +23,9 @@ class HttpResponse:
 Transport = Callable[[str, dict[str, str], float], HttpResponse]
 
 
-def default_transport(url: str, headers: dict[str, str], timeout: float) -> HttpResponse:
+def default_transport(
+    url: str, headers: dict[str, str], timeout: float
+) -> HttpResponse:
     req = request.Request(url, headers=headers, method="GET")
     try:
         with request.urlopen(req, timeout=timeout) as resp:
@@ -33,7 +35,9 @@ def default_transport(url: str, headers: dict[str, str], timeout: float) -> Http
             return HttpResponse(status=status, body=body, headers=resp_headers)
     except error.HTTPError as exc:
         body = exc.read()
-        resp_headers = {key: value for key, value in exc.headers.items()} if exc.headers else {}
+        resp_headers = (
+            {key: value for key, value in exc.headers.items()} if exc.headers else {}
+        )
         return HttpResponse(status=exc.code, body=body, headers=resp_headers)
     except Exception as exc:
         raise TMDBError(f"network error for {url}: {exc}") from exc
@@ -47,6 +51,8 @@ class TvSearchResult:
     original_name: str | None
     popularity: float | None
     vote_count: int | None
+    genre_ids: tuple[int, ...] | None = None
+    origin_country: tuple[str, ...] | None = None
 
     @property
     def year(self) -> int | None:
@@ -150,6 +156,51 @@ class TMDBClient:
             "/search/tv",
             {"query": query, "language": language, "page": page},
         )
+        return self._parse_tv_search_results(data)
+
+    def search_tv_anime(
+        self,
+        query: str,
+        *,
+        language: str = "zh-CN",
+        max_pages: int = 5,
+    ) -> list[TvSearchResult]:
+        """
+        Search for anime TV shows. Filters by Animation genre (16).
+        Falls back to all results if no animation matches found.
+        """
+        all_results: list[TvSearchResult] = []
+        for page in range(1, max_pages + 1):
+            data = self._get_json(
+                "/search/tv",
+                {"query": query, "language": language, "page": page},
+            )
+            page_results = self._parse_tv_search_results(data)
+            all_results.extend(page_results)
+            if len(page_results) < 20:  # No more pages
+                break
+
+        # Filter for animation: Animation genre (16)
+        anime_results = [r for r in all_results if r.genre_ids and 16 in r.genre_ids]
+
+        if anime_results:
+            logger.info(
+                "tmdb: search_tv_anime query=%s anime_count=%s total_count=%s",
+                query,
+                len(anime_results),
+                len(all_results),
+            )
+            return anime_results
+
+        # Fallback: return all results if no animation found
+        logger.info(
+            "tmdb: search_tv_anime query=%s no_anime_found, returning_all=%s",
+            query,
+            len(all_results),
+        )
+        return all_results
+
+    def _parse_tv_search_results(self, data: dict[str, object]) -> list[TvSearchResult]:
         if "results" not in data:
             raise TMDBError(f"missing 'results' in response from {self._last_url}")
         results_raw = data["results"]
@@ -159,11 +210,29 @@ class TMDBClient:
         results: list[TvSearchResult] = []
         for item in results_raw:
             if not isinstance(item, dict):
-                raise TMDBError(f"invalid result entry in response from {self._last_url}")
+                raise TMDBError(
+                    f"invalid result entry in response from {self._last_url}"
+                )
             raw_id = _require_key(item, "id", self._last_url)
             raw_name = _require_key(item, "name", self._last_url)
             if not isinstance(raw_id, int) or not isinstance(raw_name, str):
-                raise TMDBError(f"invalid result fields in response from {self._last_url}")
+                raise TMDBError(
+                    f"invalid result fields in response from {self._last_url}"
+                )
+            # Parse genre_ids as tuple of ints
+            raw_genre_ids = item.get("genre_ids")
+            genre_ids: tuple[int, ...] | None = None
+            if isinstance(raw_genre_ids, list):
+                genre_ids = tuple(g for g in raw_genre_ids if isinstance(g, int))
+
+            # Parse origin_country as tuple of strings
+            raw_origin_country = item.get("origin_country")
+            origin_country: tuple[str, ...] | None = None
+            if isinstance(raw_origin_country, list):
+                origin_country = tuple(
+                    c for c in raw_origin_country if isinstance(c, str)
+                )
+
             results.append(
                 TvSearchResult(
                     id=raw_id,
@@ -172,12 +241,12 @@ class TMDBClient:
                     original_name=_optional_str(item.get("original_name")),
                     popularity=_optional_float(item.get("popularity")),
                     vote_count=_optional_int(item.get("vote_count")),
+                    genre_ids=genre_ids,
+                    origin_country=origin_country,
                 )
             )
         logger.info(
-            "tmdb: search_tv done query=%s language=%s results_count=%s",
-            query,
-            language,
+            "tmdb: search_tv parsed results_count=%s",
             len(results),
         )
         return results
@@ -202,7 +271,9 @@ class TMDBClient:
             season_number = _require_key(item, "season_number", self._last_url)
             episode_count = _require_key(item, "episode_count", self._last_url)
             if not isinstance(season_number, int) or not isinstance(episode_count, int):
-                raise TMDBError(f"invalid season fields in response from {self._last_url}")
+                raise TMDBError(
+                    f"invalid season fields in response from {self._last_url}"
+                )
             seasons.append(
                 SeasonSummary(season_number=season_number, episode_count=episode_count)
             )
@@ -244,14 +315,16 @@ class TMDBClient:
                 raise TMDBError(f"invalid episode in response from {self._last_url}")
             episode_number = _require_key(item, "episode_number", self._last_url)
             if not isinstance(episode_number, int):
-                raise TMDBError(f"invalid episode fields in response from {self._last_url}")
+                raise TMDBError(
+                    f"invalid episode fields in response from {self._last_url}"
+                )
             episodes.append(
                 Episode(
                     episode_number=episode_number,
                     name=_optional_str(item.get("name")),
                     overview=_optional_str(item.get("overview")),
+                )
             )
-        )
         episodes.sort(key=lambda episode: episode.episode_number)
         logger.info(
             "tmdb: get_season done tv_id=%s season_number=%s language=%s episodes_count=%s",
@@ -267,7 +340,9 @@ class TMDBClient:
         )
 
     def _get_json(self, path: str, params: dict[str, object]) -> dict[str, object]:
-        sanitized_params = {key: value for key, value in params.items() if key != "api_key"}
+        sanitized_params = {
+            key: value for key, value in params.items() if key != "api_key"
+        }
         logger.debug("tmdb: request path=%s params=%s", path, sanitized_params)
         url = self._build_url(path, {**params, "api_key": self._api_key})
         self._last_url = url

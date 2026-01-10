@@ -48,24 +48,29 @@ def build_tmdb_tv_id_select_messages(
     allowed_ids = [candidate.id for candidate in trimmed]
 
     system_content = (
-        "Select the correct TMDB TV id from the candidate list. "
-        "Respond with ONLY valid JSON in the form {\"tmdb\": <int>} with no other keys, "
+        "Select the correct TMDB TV id for an ANIME series from the candidate list. "
+        "This tool is for renaming anime episode files, so prefer Japanese animation (anime) results. "
+        'Respond with ONLY valid JSON in the form {"tmdb": <int>} with no other keys, '
         "no markdown, and no commentary. The id must be selected from the candidates."
     )
 
     lines = [
         f"dirname: {dirname}",
-        "candidates:",
-        "id|name|first_air_date|original_name|popularity|vote_count",
+        "candidates (genre 16=Animation, origin_country JP=Japan=anime):",
+        "id|name|first_air_date|original_name|origin_country|genre_ids",
     ]
     for candidate in trimmed:
+        origin = ",".join(candidate.origin_country) if candidate.origin_country else ""
+        genres = (
+            ",".join(str(g) for g in candidate.genre_ids) if candidate.genre_ids else ""
+        )
         parts = [
             str(candidate.id),
             _format_field(candidate.name),
             _format_field(candidate.first_air_date),
             _format_field(candidate.original_name),
-            _format_field(candidate.popularity),
-            _format_field(candidate.vote_count),
+            origin,
+            genres,
         ]
         lines.append("|".join(parts))
 
@@ -83,7 +88,7 @@ def build_tmdb_tv_id_select_messages(
 def build_tmdb_title_clean_messages(dirname: str) -> list[ChatMessage]:
     system_content = (
         "Extract the canonical TV series title from a noisy folder name for TMDB search. "
-        "Respond with ONLY valid JSON in the form {\"title\": \"...\"} with no other keys, "
+        'Respond with ONLY valid JSON in the form {"title": "..."} with no other keys, '
         "no markdown, and no commentary. The title should exclude release groups, "
         "quality tags, season/episode markers, and other non-title metadata."
     )
@@ -138,14 +143,20 @@ def build_episode_mapping_messages(
     lines.append("for s==0: 1..season_episode_counts[0]")
     lines.append("for s>=1: 1..season_episode_counts[s]")
     lines.append("sort eps by v ascending")
-    lines.append("u must contain only subtitle ids for that episode video; otherwise leave u empty")
+    lines.append(
+        "u must contain only subtitle ids for that episode video; otherwise leave u empty"
+    )
     lines.append(
         "if series_dir or rel_path has explicit season marker (S2/S02/Season 2/第2季), "
         "map to that season"
     )
     lines.append("put OVA/OAD in S00")
-    lines.append("prefer matching OVA/OAD using TMDB specials name/overview that mention OVA/OAD")
-    lines.append("if no explicit OVA/OAD info, assume local OVA/OAD order matches TMDB specials order")
+    lines.append(
+        "prefer matching OVA/OAD using TMDB specials name/overview that mention OVA/OAD"
+    )
+    lines.append(
+        "if no explicit OVA/OAD info, assume local OVA/OAD order matches TMDB specials order"
+    )
 
     lines.append("TMDB:")
     lines.append(f"tmdb_id: {tmdb_id}")
@@ -161,12 +172,16 @@ def build_episode_mapping_messages(
     if 0 in season_episode_counts and (specials_zh or specials_en):
         lines.append("specials (season 0):")
         lines.append("ep|name_zh|overview_zh_snippet|name_en|overview_en_snippet")
-        zh_lookup = {
-            episode.episode_number: episode for episode in specials_zh.episodes
-        } if specials_zh else {}
-        en_lookup = {
-            episode.episode_number: episode for episode in specials_en.episodes
-        } if specials_en else {}
+        zh_lookup = (
+            {episode.episode_number: episode for episode in specials_zh.episodes}
+            if specials_zh
+            else {}
+        )
+        en_lookup = (
+            {episode.episode_number: episode for episode in specials_en.episodes}
+            if specials_en
+            else {}
+        )
         episode_numbers = sorted(set(zh_lookup.keys()) | set(en_lookup.keys()))
         for ep_number in episode_numbers:
             zh_episode = zh_lookup.get(ep_number)
@@ -181,9 +196,7 @@ def build_episode_mapping_messages(
                 en_episode.overview if en_episode else None,
                 max_chars=max_special_overview_chars,
             )
-            lines.append(
-                f"{ep_number}|{name_zh}|{overview_zh}|{name_en}|{overview_en}"
-            )
+            lines.append(f"{ep_number}|{name_zh}|{overview_zh}|{name_en}|{overview_en}")
 
     if existing_s00_files:
         lines.append("existing destination S00 files:")

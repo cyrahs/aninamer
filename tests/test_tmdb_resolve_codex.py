@@ -22,6 +22,8 @@ def _candidate(
     original_name: str | None = None,
     popularity: float | None = None,
     vote_count: int | None = None,
+    genre_ids: tuple[int, ...] | None = None,
+    origin_country: tuple[str, ...] | None = None,
 ) -> TvSearchResult:
     return TvSearchResult(
         id=tmdb_id,
@@ -30,6 +32,8 @@ def _candidate(
         original_name=original_name,
         popularity=popularity,
         vote_count=vote_count,
+        genre_ids=genre_ids,
+        origin_country=origin_country,
     )
 
 
@@ -56,6 +60,8 @@ def test_build_tmdb_tv_id_select_messages_formats_content() -> None:
             "Show\nOne",
             popularity=1.2,
             vote_count=10,
+            genre_ids=(16,),
+            origin_country=("JP",),
         ),
         _candidate(
             2,
@@ -77,9 +83,11 @@ def test_build_tmdb_tv_id_select_messages_formats_content() -> None:
 
     user_content = messages[1].content
     assert "dirname: Series Dir" in user_content
-    assert "id|name|first_air_date|original_name|popularity|vote_count" in user_content
+    assert (
+        "id|name|first_air_date|original_name|origin_country|genre_ids" in user_content
+    )
     assert "Show\nOne" not in user_content
-    assert "1|Show One|\"\"|\"\"|1.2|10" in user_content
+    assert '1|Show One|""|""|JP|16' in user_content
     assert "Show Two" not in user_content
     assert "allowed ids: [1]" in user_content
     assert 'required output schema: {"tmdb": <one of allowed ids>}' in user_content
