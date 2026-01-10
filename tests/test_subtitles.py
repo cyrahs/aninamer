@@ -7,7 +7,9 @@ import pytest
 from aninamer.subtitles import (
     ChineseSubtitleVariant,
     detect_chinese_sub_suffix,
+    detect_chinese_sub_suffixes_batch,
     detect_chinese_sub_variant,
+    detect_chinese_sub_variants_batch,
     detect_variant_from_filename,
     detect_variant_from_text,
 )
@@ -96,3 +98,41 @@ def test_detect_chinese_sub_suffix(tmp_path: Path) -> None:
     path = tmp_path / "episode.chs.ass"
     path.write_text("为国", encoding="utf-8")
     assert detect_chinese_sub_suffix(path) == ".chs"
+
+
+def test_detect_chinese_sub_variants_batch(tmp_path: Path) -> None:
+    # Create multiple subtitle files with different variants
+    chs_file = tmp_path / "ep01.chs.ass"
+    chs_file.write_text("为国", encoding="utf-8")
+
+    cht_file = tmp_path / "ep02.ass"
+    cht_file.write_text("為國雲馬門見", encoding="utf-8")
+
+    chi_file = tmp_path / "ep03.ass"
+    chi_file.write_text("你好世界", encoding="utf-8")
+
+    paths = [chs_file, cht_file, chi_file]
+    results = detect_chinese_sub_variants_batch(paths)
+
+    assert results[chs_file] == ChineseSubtitleVariant.CHS
+    assert results[cht_file] == ChineseSubtitleVariant.CHT
+    assert results[chi_file] == ChineseSubtitleVariant.CHI
+
+
+def test_detect_chinese_sub_variants_batch_empty() -> None:
+    results = detect_chinese_sub_variants_batch([])
+    assert results == {}
+
+
+def test_detect_chinese_sub_suffixes_batch(tmp_path: Path) -> None:
+    chs_file = tmp_path / "ep01.chs.ass"
+    chs_file.write_text("为国", encoding="utf-8")
+
+    cht_file = tmp_path / "ep02.cht.srt"
+    cht_file.write_text("為國", encoding="utf-8")
+
+    paths = [chs_file, cht_file]
+    results = detect_chinese_sub_suffixes_batch(paths)
+
+    assert results[chs_file] == ".chs"
+    assert results[cht_file] == ".cht"
