@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
-
-import pytest
 
 from aninamer.apply import apply_rename_plan
 from aninamer.cli import main

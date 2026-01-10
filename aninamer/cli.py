@@ -36,7 +36,6 @@ from aninamer.plan import (
 from aninamer.plan_io import read_rename_plan_json, write_rename_plan_json
 from aninamer.scanner import SKIP_DIR_NAMES, scan_series_dir
 from aninamer.tmdb_client import (
-    CHINESE_COUNTRY_FALLBACK_ORDER,
     TMDBClient,
     TMDBError,
     TvSearchResult,

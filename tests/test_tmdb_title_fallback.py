@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from aninamer.tmdb_client import (
     CHINESE_COUNTRY_FALLBACK_ORDER,
     TMDBClient,
-    TvDetails,
     TvTranslation,
 )
 

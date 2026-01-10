@@ -4,13 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-import pytest
 
 from aninamer.cli import main
 from aninamer.llm_client import ChatMessage
 from aninamer.name_clean import build_tmdb_query_variants, clean_tmdb_query
 from aninamer.tmdb_client import (
-    Episode,
     SeasonDetails,
     SeasonSummary,
     TvDetails,
