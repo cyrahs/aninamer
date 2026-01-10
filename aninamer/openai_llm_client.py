@@ -29,6 +29,7 @@ def load_openai_config_from_env() -> OpenAIConfig:
     model = os.getenv("OPENAI_MODEL", "").strip()
     base_url = os.getenv("OPENAI_BASE_URL")
     reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT")
+    timeout_str = os.getenv("OPENAI_TIMEOUT")
 
     if not api_key:
         raise ValueError("OPENAI_API_KEY is required")
@@ -45,11 +46,19 @@ def load_openai_config_from_env() -> OpenAIConfig:
         if reasoning_effort == "":
             reasoning_effort = None
 
+    # Parse timeout from env, default to 60 seconds
+    if timeout_str is not None and timeout_str.strip():
+        try:
+            timeout = float(timeout_str.strip())
+        except ValueError:
+            pass  # Use default if invalid
+
     return OpenAIConfig(
         api_key=api_key,
         model=model,
         base_url=base_url,
         reasoning_effort=reasoning_effort,
+        timeout=timeout,
     )
 
 
