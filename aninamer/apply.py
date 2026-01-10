@@ -252,11 +252,18 @@ def apply_rename_plan(
     output_root = _resolve_path(plan.output_root)
     sources_set = {_resolve_path(move.src) for move in plan.moves}
     moves_to_apply: list[tuple[PlannedMove, Path, Path]] = []
+    skipped_already_moved = 0
 
     for move in plan.moves:
         src = _resolve_path(move.src)
         dst = _resolve_path(move.dst)
         if not src.exists() or not src.is_file():
+            # Check if this move was already completed (src missing, dst exists)
+            # This handles recovery from partial applies
+            if dst.exists() and dst.is_file():
+                logger.info("apply: skip_already_moved src=%s dst=%s", src, dst)
+                skipped_already_moved += 1
+                continue
             raise ApplyError(f"source {src} does not exist or is not a file")
         _validate_parent_creatable(dst)
         if dst.exists() and dst not in sources_set:
@@ -264,6 +271,13 @@ def apply_rename_plan(
         if src == dst:
             continue
         moves_to_apply.append((move, src, dst))
+
+    if skipped_already_moved > 0:
+        logger.info(
+            "apply: skipped_already_moved count=%s remaining=%s",
+            skipped_already_moved,
+            len(moves_to_apply),
+        )
 
     if dry_run:
         logger.info("apply: done applied_count=%s", 0)

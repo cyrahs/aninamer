@@ -242,3 +242,67 @@ def test_apply_skips_noop_moves(tmp_path: Path) -> None:
 
     assert result.applied == ()
     assert src.read_bytes() == b"video"
+
+
+def test_apply_skips_already_moved_files(tmp_path: Path) -> None:
+    """Test recovery from partial apply - src missing but dst exists."""
+    series_dir = tmp_path / "series"
+    series_dir.mkdir()
+    output_root = tmp_path / "out"
+
+    # File 1: already moved (src missing, dst exists)
+    src1 = series_dir / "ep1.mkv"
+    dst1 = output_root / "S01" / "Series S01E01.mkv"
+    dst1.parent.mkdir(parents=True)
+    dst1.write_bytes(b"video1")  # dst exists, src doesn't
+
+    # File 2: not yet moved (src exists, dst doesn't)
+    src2 = series_dir / "ep2.mkv"
+    src2.write_bytes(b"video2")
+    dst2 = output_root / "S01" / "Series S01E02.mkv"
+
+    plan = _plan(
+        series_dir,
+        output_root,
+        (
+            PlannedMove(src=src1, dst=dst1, kind="video", src_id=1),
+            PlannedMove(src=src2, dst=dst2, kind="video", src_id=2),
+        ),
+    )
+
+    result = apply_rename_plan(plan, dry_run=False)
+
+    # Only the second file should be in applied (first was already moved)
+    assert len(result.applied) == 1
+    assert result.applied[0].src == src2
+    assert result.applied[0].dst == dst2
+
+    # Both destinations should exist
+    assert dst1.exists()
+    assert dst1.read_bytes() == b"video1"
+    assert dst2.exists()
+    assert dst2.read_bytes() == b"video2"
+
+    # Source 2 should be gone (moved)
+    assert not src2.exists()
+
+
+def test_apply_raises_if_src_missing_and_dst_also_missing(tmp_path: Path) -> None:
+    """Test that we still raise if src is missing and dst doesn't exist either."""
+    series_dir = tmp_path / "series"
+    series_dir.mkdir()
+    output_root = tmp_path / "out"
+
+    src = series_dir / "ep1.mkv"  # doesn't exist
+    dst = output_root / "S01" / "Series S01E01.mkv"  # doesn't exist
+
+    plan = _plan(
+        series_dir,
+        output_root,
+        (PlannedMove(src=src, dst=dst, kind="video", src_id=1),),
+    )
+
+    with pytest.raises(ApplyError) as excinfo:
+        apply_rename_plan(plan, dry_run=False)
+
+    assert "does not exist" in str(excinfo.value)
