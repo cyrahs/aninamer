@@ -1049,7 +1049,12 @@ def _monitor_loop(
                     len(plan.moves),
                 )
 
+                # Move from pending to planned immediately after plan is written
+                # This ensures recovery works if apply crashes
                 state.pending.discard(resolved)
+                state.planned.add(resolved)
+                _write_monitor_state(state_file, state)
+
                 if args.apply:
                     applied_count = _do_apply_from_plan(
                         plan,
@@ -1064,16 +1069,16 @@ def _monitor_loop(
                     )
                     state.planned.discard(resolved)
                     state.processed.add(resolved)
-                else:
-                    state.planned.add(resolved)
-                _write_monitor_state(state_file, state)
+                    _write_monitor_state(state_file, state)
             except Exception as exc:
                 logger.exception(
                     "monitor: failed series_dir=%s error=%s",
                     series_dir,
                     exc,
                 )
+                # Remove from pending or planned (depending on where failure occurred)
                 state.pending.discard(resolved)
+                state.planned.discard(resolved)
                 state.failed.add(resolved)
                 _write_monitor_state(state_file, state)
                 continue
