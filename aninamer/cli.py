@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import sys
 from pathlib import Path
 import time
@@ -834,6 +835,47 @@ def _run_monitor(
         args.settle_seconds,
     )
 
+    # Set up signal handling for graceful shutdown
+    shutdown_requested = False
+
+    def _handle_shutdown_signal(signum: int, frame: object) -> None:
+        nonlocal shutdown_requested
+        sig_name = signal.Signals(signum).name
+        logger.info("monitor: received signal=%s, shutting down gracefully", sig_name)
+        shutdown_requested = True
+
+    original_sigterm = signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    original_sigint = signal.signal(signal.SIGINT, _handle_shutdown_signal)
+
+    try:
+        return _monitor_loop(
+            args,
+            input_root=input_root,
+            output_root=output_root,
+            log_path=log_path,
+            state_file=state_file,
+            tmdb_client_factory=tmdb_client_factory,
+            llm_for_tmdb_id_factory=llm_for_tmdb_id_factory,
+            llm_for_mapping_factory=llm_for_mapping_factory,
+            shutdown_check=lambda: shutdown_requested,
+        )
+    finally:
+        signal.signal(signal.SIGTERM, original_sigterm)
+        signal.signal(signal.SIGINT, original_sigint)
+
+
+def _monitor_loop(
+    args: argparse.Namespace,
+    *,
+    input_root: Path,
+    output_root: Path,
+    log_path: Path,
+    state_file: Path,
+    tmdb_client_factory: Callable[[], TMDBClient] | None,
+    llm_for_tmdb_id_factory: Callable[[], LLMClient] | None,
+    llm_for_mapping_factory: Callable[[], LLMClient] | None,
+    shutdown_check: Callable[[], bool],
+) -> int:
     tmdb = tmdb_client_factory() if tmdb_client_factory else _tmdb_client_from_env()
     llm_for_id_factory: Callable[[], LLMClient] | None = None
     if args.tmdb is None:
@@ -848,7 +890,7 @@ def _run_monitor(
 
     baseline_bootstrapped = False
 
-    while True:
+    while not shutdown_check():
         state, state_origin = _load_monitor_state(state_file)
         series_dirs = _discover_series_dirs(input_root)
         logger.debug("monitor: discovered count=%s", len(series_dirs))
@@ -879,7 +921,12 @@ def _run_monitor(
             baseline_bootstrapped = True
             if args.once:
                 break
-            time.sleep(args.interval)
+            # Sleep in small increments to allow faster shutdown response
+            sleep_remaining = args.interval
+            while sleep_remaining > 0 and not shutdown_check():
+                sleep_chunk = min(sleep_remaining, 1.0)
+                time.sleep(sleep_chunk)
+                sleep_remaining -= sleep_chunk
             continue
 
         state_dirty = False
@@ -1031,8 +1078,16 @@ def _run_monitor(
 
         if args.once:
             break
-        time.sleep(args.interval)
 
+        # Sleep in small increments to allow faster shutdown response
+        sleep_remaining = args.interval
+        while sleep_remaining > 0 and not shutdown_check():
+            sleep_chunk = min(sleep_remaining, 1.0)
+            time.sleep(sleep_chunk)
+            sleep_remaining -= sleep_chunk
+
+    if shutdown_check():
+        logger.info("monitor: shutdown complete")
     return 0
 
 
