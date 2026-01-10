@@ -45,7 +45,7 @@ def load_openai_config_from_env() -> OpenAIConfig:
         reasoning_effort = reasoning_effort.strip()
         if reasoning_effort == "":
             reasoning_effort = None
-
+    timeout = 60.0
     # Parse timeout from env, default to 60 seconds
     if timeout_str is not None and timeout_str.strip():
         try:

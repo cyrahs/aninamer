@@ -928,16 +928,20 @@ def _monitor_loop(
                 sleep_remaining -= sleep_chunk
             continue
 
-        state_dirty = False
-
+        # Clean up failed entries from pending/planned
+        failed_cleanup_dirty = False
         if state.failed:
             if state.pending.intersection(state.failed):
                 state.pending.difference_update(state.failed)
-                state_dirty = True
+                failed_cleanup_dirty = True
             if state.planned.intersection(state.failed):
                 state.planned.difference_update(state.failed)
-                state_dirty = True
+                failed_cleanup_dirty = True
+        if failed_cleanup_dirty:
+            _write_monitor_state(state_file, state)
 
+        # Discover new directories and add to pending
+        new_pending_dirty = False
         for series_dir in series_dirs:
             resolved = str(series_dir.resolve(strict=False))
             if resolved in state.processed:
@@ -952,14 +956,16 @@ def _monitor_loop(
             if resolved in state.planned or resolved in state.pending:
                 continue
             state.pending.add(resolved)
-            state_dirty = True
+            new_pending_dirty = True
             logger.info("monitor: new_dir series_dir=%s", series_dir)
+        if new_pending_dirty:
+            _write_monitor_state(state_file, state)
 
         if args.apply:
             for resolved in sorted(state.planned):
                 if resolved in state.failed:
                     state.planned.discard(resolved)
-                    state_dirty = True
+                    _write_monitor_state(state_file, state)
                     continue
                 series_dir = resolved_map.get(resolved, Path(resolved))
                 plan_path, rollback_path = _default_plan_paths(log_path, series_dir)
@@ -982,7 +988,7 @@ def _monitor_loop(
                     )
                     state.planned.discard(resolved)
                     state.processed.add(resolved)
-                    state_dirty = True
+                    _write_monitor_state(state_file, state)
                 except Exception as exc:
                     logger.exception(
                         "monitor: failed series_dir=%s error=%s",
@@ -991,13 +997,13 @@ def _monitor_loop(
                     )
                     state.planned.discard(resolved)
                     state.failed.add(resolved)
-                    state_dirty = True
+                    _write_monitor_state(state_file, state)
                     continue
 
         for resolved in sorted(state.pending):
             if resolved in state.failed:
                 state.pending.discard(resolved)
-                state_dirty = True
+                _write_monitor_state(state_file, state)
                 continue
             series_dir = resolved_map.get(resolved, Path(resolved))
             if resolved not in current_dirs:
@@ -1060,7 +1066,7 @@ def _monitor_loop(
                     state.processed.add(resolved)
                 else:
                     state.planned.add(resolved)
-                state_dirty = True
+                _write_monitor_state(state_file, state)
             except Exception as exc:
                 logger.exception(
                     "monitor: failed series_dir=%s error=%s",
@@ -1069,11 +1075,8 @@ def _monitor_loop(
                 )
                 state.pending.discard(resolved)
                 state.failed.add(resolved)
-                state_dirty = True
+                _write_monitor_state(state_file, state)
                 continue
-
-        if state_dirty:
-            _write_monitor_state(state_file, state)
 
         if args.once:
             break
