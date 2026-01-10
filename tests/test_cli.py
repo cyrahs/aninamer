@@ -81,7 +81,9 @@ def _write(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
-def test_cli_plan_writes_plan_and_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_plan_writes_plan_and_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     series_dir = tmp_path / "Series"
     _write(series_dir / "ep1.mkv", b"video")
     _write(series_dir / "ep1.ass", b"sub")
@@ -232,7 +234,9 @@ def test_cli_plan_uses_tmdb_tag_from_dirname(tmp_path: Path) -> None:
     assert plan.tmdb_id == 456
 
 
-def test_cli_apply_writes_rollback_plan(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_apply_writes_rollback_plan(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     series_dir = tmp_path / "series"
     out_root = tmp_path / "out"
 

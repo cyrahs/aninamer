@@ -9,7 +9,13 @@ import pytest
 from aninamer.cli import main
 from aninamer.llm_client import ChatMessage
 from aninamer.name_clean import build_tmdb_query_variants, clean_tmdb_query
-from aninamer.tmdb_client import Episode, SeasonDetails, SeasonSummary, TvDetails, TvSearchResult
+from aninamer.tmdb_client import (
+    Episode,
+    SeasonDetails,
+    SeasonSummary,
+    TvDetails,
+    TvSearchResult,
+)
 
 
 def test_clean_tmdb_query_removes_brackets_quality_and_season_markers() -> None:
@@ -74,7 +80,9 @@ class FakeTMDBClientForCleaning:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def search_tv(self, query: str, *, language: str = "zh-CN", page: int = 1) -> list[TvSearchResult]:
+    def search_tv(
+        self, query: str, *, language: str = "zh-CN", page: int = 1
+    ) -> list[TvSearchResult]:
         self.calls.append((query, language))
         # Simulate the failure: noisy query returns 0
         if "[" in query or "]" in query:
@@ -102,7 +110,9 @@ class FakeTMDBClientForCleaning:
             seasons=[SeasonSummary(season_number=1, episode_count=1)],
         )
 
-    def get_season(self, tv_id: int, season_number: int, *, language: str = "zh-CN") -> SeasonDetails:
+    def get_season(
+        self, tv_id: int, season_number: int, *, language: str = "zh-CN"
+    ) -> SeasonDetails:
         return SeasonDetails(id=None, season_number=season_number, episodes=[])
 
     def resolve_series_title(
@@ -163,7 +173,10 @@ def _write(p: Path, data: bytes) -> None:
 
 def test_cli_plan_falls_back_to_cleaned_query(tmp_path: Path) -> None:
     # The directory name is noisy and will fail unless cleaning is used.
-    series_dir = tmp_path / "[DMG&SumiSora&VCB-Studio] Mahouka Koukou no Rettousei S3 [Ma10p_1080p]"
+    series_dir = (
+        tmp_path
+        / "[DMG&SumiSora&VCB-Studio] Mahouka Koukou no Rettousei S3 [Ma10p_1080p]"
+    )
     out_root = tmp_path / "out"
     plan_file = tmp_path / "rename_plan.json"
     log_path = tmp_path / "logs"
@@ -199,7 +212,10 @@ def test_cli_plan_falls_back_to_cleaned_query(tmp_path: Path) -> None:
     assert plan_file.exists()
 
     # Ensure TMDB search was attempted with cleaned core query at least once
-    assert ("Mahouka Koukou no Rettousei", "zh-CN") in tmdb.calls or ("Mahouka Koukou no Rettousei", "en-US") in tmdb.calls
+    assert ("Mahouka Koukou no Rettousei", "zh-CN") in tmdb.calls or (
+        "Mahouka Koukou no Rettousei",
+        "en-US",
+    ) in tmdb.calls
 
 
 def test_cli_plan_falls_back_to_llm_title_when_search_empty(tmp_path: Path) -> None:
@@ -244,7 +260,9 @@ def test_cli_plan_error_includes_attempted_queries(tmp_path: Path) -> None:
     _write(series_dir / "ep1.mkv", b"video")
 
     class AlwaysEmptyTMDB(FakeTMDBClientForCleaning):
-        def search_tv(self, query: str, *, language: str = "zh-CN", page: int = 1) -> list[TvSearchResult]:
+        def search_tv(
+            self, query: str, *, language: str = "zh-CN", page: int = 1
+        ) -> list[TvSearchResult]:
             self.calls.append((query, language))
             return []
 

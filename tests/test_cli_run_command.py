@@ -12,7 +12,13 @@ import pytest
 
 from aninamer.cli import main
 from aninamer.llm_client import ChatMessage
-from aninamer.tmdb_client import Episode, SeasonDetails, SeasonSummary, TvDetails, TvSearchResult
+from aninamer.tmdb_client import (
+    Episode,
+    SeasonDetails,
+    SeasonSummary,
+    TvDetails,
+    TvSearchResult,
+)
 
 
 @dataclass
@@ -37,7 +43,9 @@ class FakeTMDBClient:
         self.details_calls: list[tuple[int, str]] = []
         self.season_calls: list[tuple[int, int, str]] = []
 
-    def search_tv(self, query: str, *, language: str = "zh-CN", page: int = 1) -> list[TvSearchResult]:
+    def search_tv(
+        self, query: str, *, language: str = "zh-CN", page: int = 1
+    ) -> list[TvSearchResult]:
         self.search_calls.append((query, language, page))
         return [
             TvSearchResult(
@@ -68,7 +76,9 @@ class FakeTMDBClient:
             seasons=[SeasonSummary(season_number=1, episode_count=1)],
         )
 
-    def get_season(self, tv_id: int, season_number: int, *, language: str = "zh-CN") -> SeasonDetails:
+    def get_season(
+        self, tv_id: int, season_number: int, *, language: str = "zh-CN"
+    ) -> SeasonDetails:
         self.season_calls.append((tv_id, season_number, language))
         # In this test, there are no specials; if called, just return empty specials.
         return SeasonDetails(id=None, season_number=season_number, episodes=[])

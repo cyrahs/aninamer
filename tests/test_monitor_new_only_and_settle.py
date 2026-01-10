@@ -45,28 +45,76 @@ class FakeTMDBClientMonitor:
         self.search_calls: list[tuple[str, str]] = []
         self.details_calls: list[int] = []
 
-    def search_tv(self, query: str, *, language: str = "zh-CN", page: int = 1) -> list[TvSearchResult]:
+    def search_tv(
+        self, query: str, *, language: str = "zh-CN", page: int = 1
+    ) -> list[TvSearchResult]:
         self.search_calls.append((query, language))
 
         # Return different IDs based on directory name tokens to avoid output collisions.
         if "ShowNew" in query:
-            return [TvSearchResult(id=101, name="测试动画New", first_air_date="2020-01-01", original_name="New", popularity=1.0, vote_count=1)]
+            return [
+                TvSearchResult(
+                    id=101,
+                    name="测试动画New",
+                    first_air_date="2020-01-01",
+                    original_name="New",
+                    popularity=1.0,
+                    vote_count=1,
+                )
+            ]
         if "ShowPending" in query:
-            return [TvSearchResult(id=102, name="测试动画Pending", first_air_date="2021-01-01", original_name="Pending", popularity=1.0, vote_count=1)]
+            return [
+                TvSearchResult(
+                    id=102,
+                    name="测试动画Pending",
+                    first_air_date="2021-01-01",
+                    original_name="Pending",
+                    popularity=1.0,
+                    vote_count=1,
+                )
+            ]
         # default
-        return [TvSearchResult(id=100, name="测试动画Old", first_air_date="2019-01-01", original_name="Old", popularity=1.0, vote_count=1)]
+        return [
+            TvSearchResult(
+                id=100,
+                name="测试动画Old",
+                first_air_date="2019-01-01",
+                original_name="Old",
+                popularity=1.0,
+                vote_count=1,
+            )
+        ]
 
     def get_tv_details(self, tv_id: int, *, language: str = "zh-CN") -> TvDetails:
         self.details_calls.append(tv_id)
         if tv_id == 101:
-            return TvDetails(id=101, name="测试动画New", original_name="New", first_air_date="2020-01-01", seasons=[SeasonSummary(season_number=1, episode_count=1)])
+            return TvDetails(
+                id=101,
+                name="测试动画New",
+                original_name="New",
+                first_air_date="2020-01-01",
+                seasons=[SeasonSummary(season_number=1, episode_count=1)],
+            )
         if tv_id == 102:
-            return TvDetails(id=102, name="测试动画Pending", original_name="Pending", first_air_date="2021-01-01", seasons=[SeasonSummary(season_number=1, episode_count=1)])
-        return TvDetails(id=100, name="测试动画Old", original_name="Old", first_air_date="2019-01-01", seasons=[SeasonSummary(season_number=1, episode_count=1)])
+            return TvDetails(
+                id=102,
+                name="测试动画Pending",
+                original_name="Pending",
+                first_air_date="2021-01-01",
+                seasons=[SeasonSummary(season_number=1, episode_count=1)],
+            )
+        return TvDetails(
+            id=100,
+            name="测试动画Old",
+            original_name="Old",
+            first_air_date="2019-01-01",
+            seasons=[SeasonSummary(season_number=1, episode_count=1)],
+        )
 
     def get_season(self, tv_id: int, season_number: int, *, language: str = "zh-CN"):
         # No specials in these tests
         from aninamer.tmdb_client import SeasonDetails
+
         return SeasonDetails(id=None, season_number=season_number, episodes=[])
 
     def resolve_series_title(
@@ -76,7 +124,9 @@ class FakeTMDBClientMonitor:
         return details.name, details
 
 
-def test_monitor_first_run_bootstraps_baseline_and_skips_existing_by_default(tmp_path: Path) -> None:
+def test_monitor_first_run_bootstraps_baseline_and_skips_existing_by_default(
+    tmp_path: Path,
+) -> None:
     in_root = tmp_path / "in_mount"
     out_root = tmp_path / "out_mount"
     log_path = tmp_path / "logs"
@@ -182,7 +232,9 @@ def test_monitor_second_run_processes_new_dir(tmp_path: Path) -> None:
     assert llm_map.calls == 1
 
     # New dir should have been processed and moved
-    dst_video = out_root / "测试动画New (2020) {tmdb-101}" / "S01" / "测试动画New S01E01.mkv"
+    dst_video = (
+        out_root / "测试动画New (2020) {tmdb-101}" / "S01" / "测试动画New S01E01.mkv"
+    )
     assert dst_video.exists()
     assert not (show_new / "ep1.mkv").exists()
 
@@ -277,6 +329,11 @@ def test_monitor_settle_seconds_defers_processing_until_stable(tmp_path: Path) -
     assert rc2 == 0
 
     # Now it should be processed
-    dst_video = out_root / "测试动画Pending (2021) {tmdb-102}" / "S01" / "测试动画Pending S01E01.mkv"
+    dst_video = (
+        out_root
+        / "测试动画Pending (2021) {tmdb-102}"
+        / "S01"
+        / "测试动画Pending S01E01.mkv"
+    )
     assert dst_video.exists()
     assert not (show_p / "ep1.mkv").exists()

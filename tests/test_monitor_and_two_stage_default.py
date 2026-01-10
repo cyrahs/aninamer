@@ -25,6 +25,7 @@ def _write(p: Path, data: bytes) -> None:
 # Apply: default two_stage=False
 # -------------------------
 
+
 def test_apply_default_single_stage_no_temp_dir(tmp_path: Path) -> None:
     series_dir = tmp_path / "series"
     out_root = tmp_path / "out"
@@ -55,6 +56,7 @@ def test_apply_default_single_stage_no_temp_dir(tmp_path: Path) -> None:
 # -------------------------
 # Monitor CLI
 # -------------------------
+
 
 @dataclass
 class FakeLLMMapping:
@@ -97,27 +99,60 @@ class FakeTMDBClientMonitor:
         self.search_calls: list[tuple[str, str]] = []
         self.details_calls: list[int] = []
 
-    def search_tv(self, query: str, *, language: str = "zh-CN", page: int = 1) -> list[TvSearchResult]:
+    def search_tv(
+        self, query: str, *, language: str = "zh-CN", page: int = 1
+    ) -> list[TvSearchResult]:
         self.search_calls.append((query, language))
 
         # Distinguish shows by query contents
         if "ShowA" in query:
-            return [TvSearchResult(id=100, name="测试动画A", first_air_date="2020-01-01", original_name="A", popularity=1.0, vote_count=1)]
+            return [
+                TvSearchResult(
+                    id=100,
+                    name="测试动画A",
+                    first_air_date="2020-01-01",
+                    original_name="A",
+                    popularity=1.0,
+                    vote_count=1,
+                )
+            ]
         if "ShowB" in query:
-            return [TvSearchResult(id=200, name="测试动画B", first_air_date="2021-01-01", original_name="B", popularity=1.0, vote_count=1)]
+            return [
+                TvSearchResult(
+                    id=200,
+                    name="测试动画B",
+                    first_air_date="2021-01-01",
+                    original_name="B",
+                    popularity=1.0,
+                    vote_count=1,
+                )
+            ]
         return []
 
     def get_tv_details(self, tv_id: int, *, language: str = "zh-CN") -> TvDetails:
         self.details_calls.append(tv_id)
         if tv_id == 100:
-            return TvDetails(id=100, name="测试动画A", original_name="A", first_air_date="2020-01-01", seasons=[SeasonSummary(season_number=1, episode_count=1)])
+            return TvDetails(
+                id=100,
+                name="测试动画A",
+                original_name="A",
+                first_air_date="2020-01-01",
+                seasons=[SeasonSummary(season_number=1, episode_count=1)],
+            )
         if tv_id == 200:
-            return TvDetails(id=200, name="测试动画B", original_name="B", first_air_date="2021-01-01", seasons=[SeasonSummary(season_number=1, episode_count=1)])
+            return TvDetails(
+                id=200,
+                name="测试动画B",
+                original_name="B",
+                first_air_date="2021-01-01",
+                seasons=[SeasonSummary(season_number=1, episode_count=1)],
+            )
         raise AssertionError("unexpected tv_id")
 
     def get_season(self, tv_id: int, season_number: int, *, language: str = "zh-CN"):
         # no specials for these tests
         from aninamer.tmdb_client import SeasonDetails
+
         return SeasonDetails(id=None, season_number=season_number, episodes=[])
 
     def resolve_series_title(
@@ -127,7 +162,9 @@ class FakeTMDBClientMonitor:
         return details.name, details
 
 
-def test_cli_monitor_once_apply_processes_each_subdir_and_writes_state(tmp_path: Path) -> None:
+def test_cli_monitor_once_apply_processes_each_subdir_and_writes_state(
+    tmp_path: Path,
+) -> None:
     in_root = tmp_path / "in"
     out_root = tmp_path / "out"
     state_file = tmp_path / "state.json"

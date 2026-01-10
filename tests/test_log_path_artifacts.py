@@ -7,7 +7,13 @@ from typing import Sequence
 
 from aninamer.cli import main
 from aninamer.llm_client import ChatMessage
-from aninamer.tmdb_client import Episode, SeasonDetails, SeasonSummary, TvDetails, TvSearchResult
+from aninamer.tmdb_client import (
+    Episode,
+    SeasonDetails,
+    SeasonSummary,
+    TvDetails,
+    TvSearchResult,
+)
 
 
 @dataclass
@@ -27,7 +33,9 @@ class FakeLLM:
 
 
 class FakeTMDBClient:
-    def search_tv(self, query: str, *, language: str = "zh-CN", page: int = 1) -> list[TvSearchResult]:
+    def search_tv(
+        self, query: str, *, language: str = "zh-CN", page: int = 1
+    ) -> list[TvSearchResult]:
         # Always return 1 candidate so TMDB-id LLM is skipped.
         return [
             TvSearchResult(
@@ -49,8 +57,16 @@ class FakeTMDBClient:
             seasons=[SeasonSummary(season_number=1, episode_count=1)],
         )
 
-    def get_season(self, tv_id: int, season_number: int, *, language: str = "zh-CN") -> SeasonDetails:
-        return SeasonDetails(id=None, season_number=season_number, episodes=[Episode(episode_number=1, name="OVA", overview="OVA")] if season_number == 0 else [])
+    def get_season(
+        self, tv_id: int, season_number: int, *, language: str = "zh-CN"
+    ) -> SeasonDetails:
+        return SeasonDetails(
+            id=None,
+            season_number=season_number,
+            episodes=[Episode(episode_number=1, name="OVA", overview="OVA")]
+            if season_number == 0
+            else [],
+        )
 
     def resolve_series_title(
         self, tv_id: int, *, country_codes: tuple[str, ...] = ()
@@ -110,7 +126,9 @@ def test_apply_default_writes_rollback_under_log_path(tmp_path: Path) -> None:
     series_dir = tmp_path / "InputSeries"
     out_root = tmp_path / "OutMount"
     log_path = tmp_path / "local_logs"
-    plan_file = tmp_path / "plan_in_tmp.rename_plan.json"  # could be anywhere (read-only)
+    plan_file = (
+        tmp_path / "plan_in_tmp.rename_plan.json"
+    )  # could be anywhere (read-only)
 
     _write(series_dir / "ep1.mkv", b"video")
 

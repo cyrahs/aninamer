@@ -94,9 +94,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Allow pre-existing destinations.",
     )
 
-    run_parser = subparsers.add_parser(
-        "run", help="Plan and optionally apply renames."
-    )
+    run_parser = subparsers.add_parser("run", help="Plan and optionally apply renames.")
     run_parser.add_argument("series_dir", type=Path, help="Series directory.")
     run_parser.add_argument("--out", type=Path, required=True, help="Output root.")
     run_parser.add_argument("--tmdb", type=int, help="TMDB TV id.")
@@ -322,9 +320,7 @@ def _search_tmdb_candidates(
 
     llm_queries = build_tmdb_query_variants(llm_title)
     attempted = {query.casefold() for query in queries}
-    llm_queries = [
-        query for query in llm_queries if query.casefold() not in attempted
-    ]
+    llm_queries = [query for query in llm_queries if query.casefold() not in attempted]
     if not llm_queries:
         logger.error(
             "tmdb_search: llm_title_no_new_queries name=%s llm_title=%s",
@@ -350,6 +346,7 @@ def _search_tmdb_candidates(
         f"no TMDB results for name '{name}' (attempted queries: {all_queries})"
     )
 
+
 def _print_plan_summary(plan: RenamePlan, plan_file: Path) -> None:
     video_moves = sum(1 for move in plan.moves if move.kind == "video")
     subtitle_moves = sum(1 for move in plan.moves if move.kind == "subtitle")
@@ -359,7 +356,9 @@ def _print_plan_summary(plan: RenamePlan, plan_file: Path) -> None:
         print(f"{move.src} -> {move.dst}")
 
 
-def _print_apply_summary(dry_run: bool, applied_count: int, rollback_file: Path) -> None:
+def _print_apply_summary(
+    dry_run: bool, applied_count: int, rollback_file: Path
+) -> None:
     status = "dry-run" if dry_run else "applied"
     print(f"Apply {status}: {applied_count} moves")
     print(f"Rollback plan: {rollback_file}")
@@ -652,9 +651,7 @@ def _build_plan_from_args(
         specials_en = None
 
     llm_for_mapping = (
-        llm_for_mapping_factory()
-        if llm_for_mapping_factory
-        else openai_llm_from_env()
+        llm_for_mapping_factory() if llm_for_mapping_factory else openai_llm_from_env()
     )
     existing_s00_files = _list_existing_s00_files(
         output_root,
@@ -765,7 +762,9 @@ def _run_apply(
     rollback_file = args.rollback_file or _default_rollback_path_from_plan(
         log_path, plan_path
     )
-    _ensure_not_within(rollback_file, plan.series_dir, plan.output_root, "rollback file")
+    _ensure_not_within(
+        rollback_file, plan.series_dir, plan.output_root, "rollback file"
+    )
     applied_count = _do_apply_from_plan(
         plan,
         rollback_file=rollback_file,
@@ -844,9 +843,7 @@ def _run_monitor(
             else openai_llm_for_tmdb_id_from_env
         )
     llm_for_mapping = (
-        llm_for_mapping_factory()
-        if llm_for_mapping_factory
-        else openai_llm_from_env()
+        llm_for_mapping_factory() if llm_for_mapping_factory else openai_llm_from_env()
     )
 
     baseline_bootstrapped = False

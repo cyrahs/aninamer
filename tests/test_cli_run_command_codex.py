@@ -9,7 +9,13 @@ import pytest
 
 from aninamer.cli import _default_plan_paths, main
 from aninamer.llm_client import ChatMessage
-from aninamer.tmdb_client import Episode, SeasonDetails, SeasonSummary, TvDetails, TvSearchResult
+from aninamer.tmdb_client import (
+    Episode,
+    SeasonDetails,
+    SeasonSummary,
+    TvDetails,
+    TvSearchResult,
+)
 
 
 @dataclass
@@ -34,7 +40,9 @@ class FakeTMDBClient:
         self.details_calls: list[tuple[int, str]] = []
         self.season_calls: list[tuple[int, int, str]] = []
 
-    def search_tv(self, query: str, *, language: str = "zh-CN", page: int = 1) -> list[TvSearchResult]:
+    def search_tv(
+        self, query: str, *, language: str = "zh-CN", page: int = 1
+    ) -> list[TvSearchResult]:
         self.search_calls.append((query, language, page))
         return [
             TvSearchResult(
@@ -68,7 +76,9 @@ class FakeTMDBClient:
             ],
         )
 
-    def get_season(self, tv_id: int, season_number: int, *, language: str = "zh-CN") -> SeasonDetails:
+    def get_season(
+        self, tv_id: int, season_number: int, *, language: str = "zh-CN"
+    ) -> SeasonDetails:
         self.season_calls.append((tv_id, season_number, language))
         if season_number != 0:
             raise AssertionError("FakeTMDBClient only expects S00 calls in this test")
