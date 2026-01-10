@@ -108,6 +108,26 @@ def _parse_year(value: str | None) -> int | None:
         return None
 
 
+# Country code fallback order for Chinese titles (used with TMDB translations API)
+# These are ISO 3166-1 country codes
+CHINESE_COUNTRY_FALLBACK_ORDER: tuple[str, ...] = (
+    "CN",  # Simplified Chinese - China
+    "SG",  # Simplified Chinese - Singapore
+    "HK",  # Traditional Chinese - Hong Kong
+    "TW",  # Traditional Chinese - Taiwan
+)
+
+
+@dataclass(frozen=True)
+class TvTranslation:
+    """A single translation entry from TMDB."""
+
+    iso_3166_1: str  # Country code (e.g., "CN", "TW")
+    iso_639_1: str  # Language code (e.g., "zh")
+    name: str | None  # Translated series name
+    overview: str | None  # Translated overview
+
+
 def _require_key(data: dict[str, object], key: str, url: str) -> object:
     if key not in data:
         raise TMDBError(f"missing '{key}' in response from {url}")
@@ -338,6 +358,125 @@ class TMDBClient:
             season_number=parsed_season_number,
             episodes=episodes,
         )
+
+    def get_tv_translations(self, tv_id: int) -> list[TvTranslation]:
+        """
+        Fetch all available translations for a TV show.
+
+        Uses TMDB's /tv/{tv_id}/translations endpoint.
+
+        Returns:
+            List of TvTranslation objects containing translated names/overviews.
+        """
+        data = self._get_json(f"/tv/{tv_id}/translations", {})
+        translations_raw = data.get("translations")
+        if not isinstance(translations_raw, list):
+            logger.warning(
+                "tmdb: get_tv_translations tv_id=%s missing translations list",
+                tv_id,
+            )
+            return []
+
+        translations: list[TvTranslation] = []
+        for item in translations_raw:
+            if not isinstance(item, dict):
+                continue
+            iso_3166_1 = item.get("iso_3166_1")
+            iso_639_1 = item.get("iso_639_1")
+            if not isinstance(iso_3166_1, str) or not isinstance(iso_639_1, str):
+                continue
+
+            # Extract name from nested "data" object
+            data_obj = item.get("data")
+            name: str | None = None
+            overview: str | None = None
+            if isinstance(data_obj, dict):
+                name = _optional_str(data_obj.get("name"))
+                overview = _optional_str(data_obj.get("overview"))
+
+            translations.append(
+                TvTranslation(
+                    iso_3166_1=iso_3166_1,
+                    iso_639_1=iso_639_1,
+                    name=name,
+                    overview=overview,
+                )
+            )
+
+        logger.info(
+            "tmdb: get_tv_translations tv_id=%s translations_count=%s",
+            tv_id,
+            len(translations),
+        )
+        return translations
+
+    def resolve_series_title(
+        self,
+        tv_id: int,
+        *,
+        country_codes: tuple[str, ...] = CHINESE_COUNTRY_FALLBACK_ORDER,
+    ) -> tuple[str, TvDetails]:
+        """
+        Resolve the best available series title using TMDB translations API.
+
+        Fetches translations and returns the first non-empty title matching
+        one of the country codes in order. Falls back to original_name if
+        no translation is found.
+
+        Args:
+            tv_id: The TMDB TV show ID.
+            country_codes: Tuple of ISO 3166-1 country codes to try in order.
+                          Defaults to ("CN", "SG", "HK", "TW").
+
+        Returns:
+            A tuple of (resolved_title, details).
+            The details are fetched with language="zh-CN" for consistency.
+        """
+        # Fetch details in zh-CN for consistent metadata (seasons, year, etc.)
+        details = self.get_tv_details(tv_id, language="zh-CN")
+
+        # Fetch all translations
+        translations = self.get_tv_translations(tv_id)
+
+        # Build a map of country code -> translation name
+        translation_by_country: dict[str, str] = {}
+        for trans in translations:
+            name = (trans.name or "").strip()
+            if name and trans.iso_3166_1 not in translation_by_country:
+                translation_by_country[trans.iso_3166_1] = name
+
+        # Try each country code in order
+        for country in country_codes:
+            if country in translation_by_country:
+                title = translation_by_country[country]
+                logger.info(
+                    "tmdb: resolve_series_title tv_id=%s found country=%s title=%s",
+                    tv_id,
+                    country,
+                    title,
+                )
+                return title, details
+
+        # Fall back to original_name
+        original = (details.original_name or "").strip()
+        if original:
+            logger.info(
+                "tmdb: resolve_series_title tv_id=%s fallback_to_original title=%s",
+                tv_id,
+                original,
+            )
+            return original, details
+
+        # Last resort: use the details name
+        fallback = (details.name or "").strip()
+        if not fallback:
+            fallback = "Unknown"
+        logger.warning(
+            "tmdb: resolve_series_title tv_id=%s no_translation_found fallback=%s",
+            tv_id,
+            fallback,
+        )
+        return fallback, details
 
     def _get_json(self, path: str, params: dict[str, object]) -> dict[str, object]:
         sanitized_params = {

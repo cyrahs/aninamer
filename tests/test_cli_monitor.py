@@ -44,6 +44,11 @@ class FakeTMDB:
     ) -> object:
         raise AssertionError("unexpected specials lookup")
 
+    def resolve_series_title(
+        self, tv_id: int, *, country_codes: tuple[str, ...] = ()
+    ) -> tuple[str, TvDetails]:
+        return self.details.name, self.details
+
 
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -78,6 +78,12 @@ class FakeTMDBClient:
             episodes=[Episode(episode_number=1, name="OVA", overview="OVA 特别篇")],
         )
 
+    def resolve_series_title(
+        self, tv_id: int, *, country_codes: tuple[str, ...] = ()
+    ) -> tuple[str, TvDetails]:
+        details = self.get_tv_details(tv_id)
+        return details.name, details
+
 
 def _write(p: Path, data: bytes) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)

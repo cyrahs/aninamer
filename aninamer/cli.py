@@ -34,7 +34,12 @@ from aninamer.plan import (
 )
 from aninamer.plan_io import read_rename_plan_json, write_rename_plan_json
 from aninamer.scanner import SKIP_DIR_NAMES, scan_series_dir
-from aninamer.tmdb_client import TMDBClient, TMDBError, TvSearchResult
+from aninamer.tmdb_client import (
+    CHINESE_COUNTRY_FALLBACK_ORDER,
+    TMDBClient,
+    TMDBError,
+    TvSearchResult,
+)
 from aninamer.tmdb_resolve import (
     resolve_tmdb_search_title_with_llm,
     resolve_tmdb_tv_id_with_llm,
@@ -632,8 +637,7 @@ def _build_plan_from_args(
                 max_candidates=args.max_candidates,
             )
 
-    details = tmdb.get_tv_details(tmdb_id, language="zh-CN")
-    series_name_zh_cn = _resolve_series_name(details.name, details.original_name)
+    series_name_zh_cn, details = tmdb.resolve_series_title(tmdb_id)
     year = details.year
     season_episode_counts = {
         season.season_number: season.episode_count for season in details.seasons

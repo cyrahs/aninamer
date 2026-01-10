@@ -120,6 +120,12 @@ class FakeTMDBClientMonitor:
         from aninamer.tmdb_client import SeasonDetails
         return SeasonDetails(id=None, season_number=season_number, episodes=[])
 
+    def resolve_series_title(
+        self, tv_id: int, *, country_codes: tuple[str, ...] = ()
+    ) -> tuple[str, TvDetails]:
+        details = self.get_tv_details(tv_id)
+        return details.name, details
+
 
 def test_cli_monitor_once_apply_processes_each_subdir_and_writes_state(tmp_path: Path) -> None:
     in_root = tmp_path / "in"

@@ -9,7 +9,13 @@ import pytest
 from aninamer.cli import _default_plan_paths, main
 from aninamer.plan import PlannedMove, RenamePlan
 from aninamer.plan_io import read_rename_plan_json, write_rename_plan_json
-from aninamer.tmdb_client import SeasonDetails, SeasonSummary, TvDetails, TvSearchResult
+from aninamer.tmdb_client import (
+    CHINESE_COUNTRY_FALLBACK_ORDER,
+    SeasonDetails,
+    SeasonSummary,
+    TvDetails,
+    TvSearchResult,
+)
 
 
 @dataclass
@@ -35,6 +41,7 @@ class FakeTMDB:
     specials_zh: SeasonDetails | None = None
     specials_en: SeasonDetails | None = None
     search_queries: list[str] = field(default_factory=list)
+    resolved_title: str | None = None  # If set, resolve_series_title returns this
 
     def search_tv(
         self, query: str, *, language: str = "zh-CN", page: int = 1
@@ -55,6 +62,18 @@ class FakeTMDB:
         if self.specials_en is None:
             raise AssertionError("unexpected en specials call")
         return self.specials_en
+
+    def resolve_series_title(
+        self,
+        tv_id: int,
+        *,
+        country_codes: tuple[str, ...] = CHINESE_COUNTRY_FALLBACK_ORDER,
+    ) -> tuple[str, TvDetails]:
+        if self.resolved_title is not None:
+            return self.resolved_title, self.details
+        # Default to details.name or original_name
+        name = self.details.name or self.details.original_name or "Unknown"
+        return name, self.details
 
 
 def _write(path: Path, data: bytes) -> None:

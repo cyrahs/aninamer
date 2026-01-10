@@ -105,6 +105,12 @@ class FakeTMDBClientForCleaning:
     def get_season(self, tv_id: int, season_number: int, *, language: str = "zh-CN") -> SeasonDetails:
         return SeasonDetails(id=None, season_number=season_number, episodes=[])
 
+    def resolve_series_title(
+        self, tv_id: int, *, country_codes: tuple[str, ...] = ()
+    ) -> tuple[str, TvDetails]:
+        details = self.get_tv_details(tv_id)
+        return details.name, details
+
 
 class FakeTMDBClientForLLMTitle:
     def __init__(self, target_query: str, tmdb_id: int) -> None:
@@ -142,6 +148,12 @@ class FakeTMDBClientForLLMTitle:
         self, tv_id: int, season_number: int, *, language: str = "zh-CN"
     ) -> SeasonDetails:
         return SeasonDetails(id=None, season_number=season_number, episodes=[])
+
+    def resolve_series_title(
+        self, tv_id: int, *, country_codes: tuple[str, ...] = ()
+    ) -> tuple[str, TvDetails]:
+        details = self.get_tv_details(tv_id)
+        return details.name, details
 
 
 def _write(p: Path, data: bytes) -> None:
