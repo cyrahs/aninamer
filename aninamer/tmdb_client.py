@@ -174,7 +174,12 @@ class TMDBClient:
     ) -> list[TvSearchResult]:
         data = self._get_json(
             "/search/tv",
-            {"query": query, "language": language, "page": page},
+            {
+                "query": query,
+                "language": language,
+                "page": page,
+                "include_adult": "true",
+            },
         )
         return self._parse_tv_search_results(data)
 
@@ -193,7 +198,12 @@ class TMDBClient:
         for page in range(1, max_pages + 1):
             data = self._get_json(
                 "/search/tv",
-                {"query": query, "language": language, "page": page},
+                {
+                    "query": query,
+                    "language": language,
+                    "page": page,
+                    "include_adult": "true",
+                },
             )
             page_results = self._parse_tv_search_results(data)
             all_results.extend(page_results)
