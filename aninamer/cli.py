@@ -265,14 +265,15 @@ def _search_tmdb_candidates(
     languages = ["zh-CN", "en-US", "ja-JP"]
     logger.info("tmdb_search: start name=%s variants=%s", name, len(queries))
 
-    def _search_queries(query_list: Sequence[str]) -> list[TvSearchResult]:
+    def _search_anime_queries(query_list: Sequence[str]) -> list[TvSearchResult]:
+        """Search using search_tv_anime (filters for Animation genre 16)."""
         for query in query_list:
             candidates_by_id: dict[int, TvSearchResult] = {}
             first_language_with_results: str | None = None
             for language in languages:
-                results = tmdb.search_tv(query, language=language, page=1)
+                results = tmdb.search_tv_anime(query, language=language, max_pages=1)
                 logger.info(
-                    "tmdb_search: attempt query=%s language=%s results=%s",
+                    "tmdb_search: anime query=%s language=%s results=%s",
                     query,
                     language,
                     len(results),
@@ -284,13 +285,49 @@ def _search_tmdb_candidates(
                         candidates_by_id[candidate.id] = candidate
             if candidates_by_id:
                 logger.info(
-                    "tmdb_search: success query=%s language=%s candidates=%s",
+                    "tmdb_search: anime success query=%s language=%s candidates=%s",
                     query,
                     first_language_with_results or languages[0],
                     len(candidates_by_id),
                 )
                 return list(candidates_by_id.values())
         return []
+
+    def _search_all_queries(query_list: Sequence[str]) -> list[TvSearchResult]:
+        """Fallback search using search_tv (no genre filter)."""
+        for query in query_list:
+            candidates_by_id: dict[int, TvSearchResult] = {}
+            first_language_with_results: str | None = None
+            for language in languages:
+                results = tmdb.search_tv(query, language=language, page=1)
+                logger.info(
+                    "tmdb_search: fallback query=%s language=%s results=%s",
+                    query,
+                    language,
+                    len(results),
+                )
+                if results and first_language_with_results is None:
+                    first_language_with_results = language
+                for candidate in results:
+                    if candidate.id not in candidates_by_id:
+                        candidates_by_id[candidate.id] = candidate
+            if candidates_by_id:
+                logger.info(
+                    "tmdb_search: fallback success query=%s language=%s candidates=%s",
+                    query,
+                    first_language_with_results or languages[0],
+                    len(candidates_by_id),
+                )
+                return list(candidates_by_id.values())
+        return []
+
+    def _search_queries(query_list: Sequence[str]) -> list[TvSearchResult]:
+        """Try anime search first, fallback to all TV if no results."""
+        candidates = _search_anime_queries(query_list)
+        if candidates:
+            return candidates
+        logger.info("tmdb_search: no anime results, trying fallback search")
+        return _search_all_queries(query_list)
 
     candidates = _search_queries(queries)
     if candidates:
