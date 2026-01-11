@@ -12,6 +12,7 @@ from pathlib import Path
 import time
 from typing import Callable, Sequence
 
+from aninamer import __version__
 from aninamer.apply import apply_rename_plan
 from aninamer.episode_mapping import map_episodes_with_llm
 from aninamer.errors import (
@@ -1132,6 +1133,7 @@ def main(
         return 1
 
     configure_logging(log_level, log_path=log_path)
+    logger.info("aninamer v%s", __version__)
 
     try:
         if args.command == "plan":

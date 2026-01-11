@@ -126,7 +126,8 @@ Errors should be actionable and include context (which file id/path, which seaso
   - apply produces rollback plan
 
 Command:
-- `pytest -q`
+- Use `.venv/bin/python` for running tests.
+- `.venv/bin/python -m pytest -q`
 
 ---
 

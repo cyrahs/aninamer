@@ -1,6 +1,6 @@
 [project]
 name = "aninamer"
-version = "0.1.0"
+version = "0.1.1"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -9,11 +9,7 @@ dependencies = []
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-markers = [
-    "integration: tests that call real external services (OpenAI, TMDB)",
-]
+markers = ["integration: tests that call real external services (OpenAI, TMDB)"]
 
 [dependency-groups]
-dev = [
-    "pytest>=9.0.2",
-]
+dev = ["pytest>=9.0.2"]
