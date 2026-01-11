@@ -144,7 +144,7 @@ class OpenAIChatCompletionsLLM(LLMClient):
         messages: Sequence[ChatMessage],
         *,
         temperature: float = 0.0,
-        max_output_tokens: int = 256,
+        max_output_tokens: int = 4096,
     ) -> str:
         # Build messages array for Chat Completions API
         chat_messages = [{"role": msg.role, "content": msg.content} for msg in messages]

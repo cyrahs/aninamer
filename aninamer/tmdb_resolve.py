@@ -93,7 +93,7 @@ def resolve_tmdb_search_title_with_llm(
 
     for attempt in range(1, max_attempts + 1):
         try:
-            response = llm.chat(messages, temperature=0.0, max_output_tokens=256)
+            response = llm.chat(messages, temperature=0.0, max_output_tokens=4096)
             logger.debug("tmdb_resolve: title_raw_llm_output=%s", response)
 
             title = parse_tmdb_search_title(response)
@@ -156,7 +156,7 @@ def resolve_tmdb_tv_id_with_llm(
     )
     for attempt in range(1, max_attempts + 1):
         try:
-            response = llm.chat(messages, temperature=0.0, max_output_tokens=1024)
+            response = llm.chat(messages, temperature=0.0, max_output_tokens=4096)
             logger.debug("tmdb_resolve: raw_llm_output=%s", response)
 
             selected_id = parse_selected_tmdb_tv_id(response, allowed_ids=allowed_ids)
