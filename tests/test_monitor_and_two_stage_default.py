@@ -126,6 +126,11 @@ class FakeTMDBClientMonitor:
             ]
         return []
 
+    def search_tv_anime(
+        self, query: str, *, language: str = "zh-CN", max_pages: int = 1
+    ) -> list[TvSearchResult]:
+        return self.search_tv(query, language=language, page=1)
+
     def get_tv_details(self, tv_id: int, *, language: str = "zh-CN") -> TvDetails:
         self.details_calls.append(tv_id)
         if tv_id == 100:

@@ -51,6 +51,8 @@ class FakeTransport:
         for key, data in self.responses.items():
             if key in url:
                 return FakeHttpResponse(200, json.dumps(data).encode())
+        if "/alternative_titles" in url:
+            return FakeHttpResponse(200, json.dumps({"results": []}).encode())
         return FakeHttpResponse(404, b'{"status_message": "not found"}')
 
 

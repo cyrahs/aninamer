@@ -161,7 +161,7 @@ def test_resolve_tmdb_tv_id_with_llm_calls_and_truncates() -> None:
     assert len(llm.calls) == 1
     _messages, temperature, max_output_tokens = llm.calls[0]
     assert temperature == 0.0
-    assert max_output_tokens == 1024
+    assert max_output_tokens == 4096
 
 
 def test_resolve_tmdb_tv_id_with_llm_rejects_unlisted_id() -> None:
