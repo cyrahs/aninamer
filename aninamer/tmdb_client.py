@@ -117,6 +117,14 @@ CHINESE_COUNTRY_FALLBACK_ORDER: tuple[str, ...] = (
     "TW",  # Traditional Chinese - Taiwan
 )
 
+# Country codes for Chinese alternative titles (aliases)
+CHINESE_ALIAS_COUNTRY_CODES: tuple[str, ...] = (
+    "CN",  # China
+    "SG",  # Singapore
+    "HK",  # Hong Kong
+    "TW",  # Taiwan
+)
+
 
 @dataclass(frozen=True)
 class TvTranslation:
@@ -126,6 +134,15 @@ class TvTranslation:
     iso_639_1: str  # Language code (e.g., "zh")
     name: str | None  # Translated series name
     overview: str | None  # Translated overview
+
+
+@dataclass(frozen=True)
+class TvAlternativeTitle:
+    """An alternative title (alias) from TMDB."""
+
+    iso_3166_1: str  # Country code (e.g., "CN", "TW")
+    title: str  # The alternative title
+    type: str | None  # Type of title (e.g., "")  - often empty
 
 
 def _require_key(data: dict[str, object], key: str, url: str) -> object:
@@ -420,23 +437,82 @@ class TMDBClient:
         )
         return translations
 
+    def get_tv_alternative_titles(
+        self, tv_id: int, *, country: str | None = None
+    ) -> list[TvAlternativeTitle]:
+        """
+        Fetch alternative titles (aliases) for a TV show.
+
+        Uses TMDB's /tv/{tv_id}/alternative_titles endpoint.
+
+        Args:
+            tv_id: The TMDB TV show ID.
+            country: Optional ISO 3166-1 country code to filter by.
+
+        Returns:
+            List of TvAlternativeTitle objects.
+        """
+        params: dict[str, object] = {}
+        if country:
+            params["country"] = country
+
+        data = self._get_json(f"/tv/{tv_id}/alternative_titles", params)
+        results_raw = data.get("results")
+        if not isinstance(results_raw, list):
+            logger.warning(
+                "tmdb: get_tv_alternative_titles tv_id=%s missing results list",
+                tv_id,
+            )
+            return []
+
+        titles: list[TvAlternativeTitle] = []
+        for item in results_raw:
+            if not isinstance(item, dict):
+                continue
+            iso_3166_1 = item.get("iso_3166_1")
+            title = item.get("title")
+            if not isinstance(iso_3166_1, str) or not isinstance(title, str):
+                continue
+            title_stripped = title.strip()
+            if not title_stripped:
+                continue
+
+            titles.append(
+                TvAlternativeTitle(
+                    iso_3166_1=iso_3166_1,
+                    title=title_stripped,
+                    type=_optional_str(item.get("type")),
+                )
+            )
+
+        logger.info(
+            "tmdb: get_tv_alternative_titles tv_id=%s titles_count=%s",
+            tv_id,
+            len(titles),
+        )
+        return titles
+
     def resolve_series_title(
         self,
         tv_id: int,
         *,
         country_codes: tuple[str, ...] = CHINESE_COUNTRY_FALLBACK_ORDER,
+        alias_country_codes: tuple[str, ...] = CHINESE_ALIAS_COUNTRY_CODES,
     ) -> tuple[str, TvDetails]:
         """
         Resolve the best available series title using TMDB translations API.
 
         Fetches translations and returns the first non-empty title matching
-        one of the country codes in order. Falls back to original_name if
-        no translation is found.
+        one of the country codes in order. Falls back to Chinese aliases,
+        then to original_name if no translation is found.
 
         Args:
             tv_id: The TMDB TV show ID.
-            country_codes: Tuple of ISO 3166-1 country codes to try in order.
-                          Defaults to ("CN", "SG", "HK", "TW").
+            country_codes: Tuple of ISO 3166-1 country codes to try in order
+                          for translations. Defaults to ("CN", "SG", "HK", "TW").
+            alias_country_codes: Tuple of ISO 3166-1 country codes to try
+                                for alternative titles (aliases) fallback.
+                                Defaults to ("CN", "SG", "HK", "TW").
 
         Returns:
             A tuple of (resolved_title, details).
@@ -455,12 +531,30 @@ class TMDBClient:
             if name and trans.iso_3166_1 not in translation_by_country:
                 translation_by_country[trans.iso_3166_1] = name
 
-        # Try each country code in order
+        # Try each country code in order for translations
         for country in country_codes:
             if country in translation_by_country:
                 title = translation_by_country[country]
                 logger.info(
                     "tmdb: resolve_series_title tv_id=%s found country=%s title=%s",
+                    tv_id,
+                    country,
+                    title,
+                )
+                return title, details
+
+        # Fallback: try Chinese alternative titles (aliases)
+        alternative_titles = self.get_tv_alternative_titles(tv_id)
+        alias_by_country: dict[str, str] = {}
+        for alt in alternative_titles:
+            if alt.iso_3166_1 not in alias_by_country:
+                alias_by_country[alt.iso_3166_1] = alt.title
+
+        for country in alias_country_codes:
+            if country in alias_by_country:
+                title = alias_by_country[country]
+                logger.info(
+                    "tmdb: resolve_series_title tv_id=%s found_alias country=%s title=%s",
                     tv_id,
                     country,
                     title,
