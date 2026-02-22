@@ -24,7 +24,7 @@ from aninamer.tmdb_client import TMDBClient, TMDBError
 from aninamer.tmdb_resolve import resolve_tmdb_tv_id_with_llm
 
 
-DATA_DIR = Path(__file__).parent / "data" / "real_cases"
+DATA_DIR = Path(__file__).parent / "data"
 
 SIMPLIFIED_SAMPLE = "\u4e3a"
 
