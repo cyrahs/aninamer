@@ -21,6 +21,8 @@ from aninamer.subtitles import (
         "Show.[CHS].ass",
         "Show.chs.ass",
         "Show_chs_.ass",
+        "Show.sc.ass",
+        "Show.JPSC.ass",
         "Show-zh-hans.srt",
         "Show.zh_cn.srt",
         "Show.zh-cn.srt",
@@ -37,6 +39,8 @@ def test_detect_variant_from_filename_simplified_ascii(name: str) -> None:
     [
         "Show.[CHT].ass",
         "Show.cht.ass",
+        "Show.tc.ass",
+        "Show.JPTC.ass",
         "Show-zh-hant.srt",
         "Show.zh_tw.srt",
         "Show.zh-tw.srt",
@@ -56,6 +60,8 @@ def test_detect_variant_from_filename_chinese_tokens() -> None:
 def test_detect_variant_from_filename_no_hint() -> None:
     assert detect_variant_from_filename("video.chsfoo.srt") is None
     assert detect_variant_from_filename("video.zh-cnish.srt") is None
+    assert detect_variant_from_filename("video.scfoo.srt") is None
+    assert detect_variant_from_filename("video.tcbar.srt") is None
 
 
 def test_detect_variant_from_text_simplified() -> None:

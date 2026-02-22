@@ -17,6 +17,8 @@ def test_detect_variant_from_filename_chs() -> None:
     assert detect_variant_from_filename("[SubsPlease] Show - 01 [CHS].ass") == ChineseSubtitleVariant.CHS
     assert detect_variant_from_filename("Show.01.zh-Hans.srt") == ChineseSubtitleVariant.CHS
     assert detect_variant_from_filename("Show.01.简体.ass") == ChineseSubtitleVariant.CHS
+    assert detect_variant_from_filename("Show.01.SC.ass") == ChineseSubtitleVariant.CHS
+    assert detect_variant_from_filename("Show.01.JPSC.ass") == ChineseSubtitleVariant.CHS
 
 
 def test_detect_variant_from_filename_cht() -> None:
@@ -24,11 +26,15 @@ def test_detect_variant_from_filename_cht() -> None:
     assert detect_variant_from_filename("Show.01.zh-Hant.srt") == ChineseSubtitleVariant.CHT
     assert detect_variant_from_filename("Show.01.繁体.ass") == ChineseSubtitleVariant.CHT
     assert detect_variant_from_filename("Show.01.BIG5.ass") == ChineseSubtitleVariant.CHT
+    assert detect_variant_from_filename("Show.01.TC.ass") == ChineseSubtitleVariant.CHT
+    assert detect_variant_from_filename("Show.01.JPTC.ass") == ChineseSubtitleVariant.CHT
 
 
 def test_detect_variant_from_filename_none() -> None:
     assert detect_variant_from_filename("Show.01.ass") is None
     assert detect_variant_from_filename("Show.01.chinese.ass") is None  # not a strong variant hint
+    assert detect_variant_from_filename("Show.01.scfoo.ass") is None
+    assert detect_variant_from_filename("Show.01.tcbar.ass") is None
 
 
 def test_detect_variant_from_text_chs_vs_cht() -> None:

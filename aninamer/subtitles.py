@@ -19,8 +19,29 @@ class ChineseSubtitleVariant(Enum):
         return f".{self.value}"
 
 
-_SIMPLIFIED_ASCII_TOKENS = ("chs", "hans", "zh-hans", "zh_cn", "zh-cn", "gb")
-_TRADITIONAL_ASCII_TOKENS = ("cht", "hant", "zh-hant", "zh_tw", "zh-tw", "big5")
+# Common fansub shorthand:
+# - sc/tc: Simplified/Traditional Chinese
+# - jpsc/jptc: Japanese + Simplified/Traditional Chinese
+_SIMPLIFIED_ASCII_TOKENS = (
+    "chs",
+    "hans",
+    "zh-hans",
+    "zh_cn",
+    "zh-cn",
+    "gb",
+    "sc",
+    "jpsc",
+)
+_TRADITIONAL_ASCII_TOKENS = (
+    "cht",
+    "hant",
+    "zh-hant",
+    "zh_tw",
+    "zh-tw",
+    "big5",
+    "tc",
+    "jptc",
+)
 _SIMPLIFIED_WORDS = ("简体", "简中")
 _TRADITIONAL_WORDS = ("繁体", "繁中")
 
