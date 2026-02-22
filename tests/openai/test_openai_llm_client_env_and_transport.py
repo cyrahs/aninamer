@@ -71,7 +71,6 @@ def test_load_openai_config_from_env_defaults(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
     monkeypatch.setenv("OPENAI_BASE_URL", "")
-    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "")
 
     config = load_openai_config_from_env()
     assert config.base_url == "https://api.openai.com"
@@ -83,18 +82,20 @@ def test_load_openai_config_from_env_with_reasoning_effort(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
-    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_MAPPING", "medium")
 
-    config = load_openai_config_from_env()
+    config = load_openai_config_from_env(
+        reasoning_effort_env_vars=("OPENAI_REASONING_EFFORT_MAPPING",)
+    )
     assert config.reasoning_effort == "medium"
 
 
-def test_openai_llm_for_tmdb_id_from_env_forces_low_reasoning(
+def test_openai_llm_for_tmdb_id_from_env_prefers_tmdb_reasoning_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
-    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_CHORE", "high")
 
     transport = CaptureTransport(response=_response_with_text("ok"))
     client = openai_llm_for_tmdb_id_from_env(transport=transport)
@@ -103,6 +104,39 @@ def test_openai_llm_for_tmdb_id_from_env_forces_low_reasoning(
 
     body = json.loads(transport.last_body.decode("utf-8"))
     assert body["max_tokens"] == 512
+    assert body["reasoning_effort"] == "high"
+
+
+def test_openai_llm_for_tmdb_id_from_env_ignores_legacy_reasoning_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
+    monkeypatch.delenv("OPENAI_REASONING_EFFORT_CHORE", raising=False)
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "medium")
+
+    transport = CaptureTransport(response=_response_with_text("ok"))
+    client = openai_llm_for_tmdb_id_from_env(transport=transport)
+
+    client.chat([ChatMessage(role="user", content="hello")], max_output_tokens=512)
+
+    body = json.loads(transport.last_body.decode("utf-8"))
+    assert body["reasoning_effort"] == "low"
+
+
+def test_openai_llm_for_tmdb_id_from_env_defaults_low_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
+    monkeypatch.delenv("OPENAI_REASONING_EFFORT_CHORE", raising=False)
+
+    transport = CaptureTransport(response=_response_with_text("ok"))
+    client = openai_llm_for_tmdb_id_from_env(transport=transport)
+
+    client.chat([ChatMessage(role="user", content="hello")], max_output_tokens=512)
+
+    body = json.loads(transport.last_body.decode("utf-8"))
     assert body["reasoning_effort"] == "low"
 
 

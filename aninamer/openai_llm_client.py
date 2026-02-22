@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 import json
 import logging
 import os
@@ -24,11 +24,42 @@ class OpenAIConfig:
     user_agent: str = "aninamer/0.1"
 
 
-def load_openai_config_from_env() -> OpenAIConfig:
+def _read_optional_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    return cleaned
+
+
+def _resolve_reasoning_effort(
+    *,
+    env_vars: Sequence[str],
+    default_reasoning_effort: str | None,
+) -> str | None:
+    for env_var in env_vars:
+        value = _read_optional_env(env_var)
+        if value is not None:
+            return value
+
+    if default_reasoning_effort is None:
+        return None
+    cleaned_default = default_reasoning_effort.strip()
+    if not cleaned_default:
+        return None
+    return cleaned_default
+
+
+def load_openai_config_from_env(
+    *,
+    reasoning_effort_env_vars: Sequence[str] = (),
+    default_reasoning_effort: str | None = None,
+) -> OpenAIConfig:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     model = os.getenv("OPENAI_MODEL", "").strip()
     base_url = os.getenv("OPENAI_BASE_URL")
-    reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT")
     timeout_str = os.getenv("OPENAI_TIMEOUT")
 
     if not api_key:
@@ -41,10 +72,10 @@ def load_openai_config_from_env() -> OpenAIConfig:
     else:
         base_url = base_url.strip()
 
-    if reasoning_effort is not None:
-        reasoning_effort = reasoning_effort.strip()
-        if reasoning_effort == "":
-            reasoning_effort = None
+    reasoning_effort = _resolve_reasoning_effort(
+        env_vars=reasoning_effort_env_vars,
+        default_reasoning_effort=default_reasoning_effort,
+    )
     timeout = 60.0
     # Parse timeout from env, default to 60 seconds
     if timeout_str is not None and timeout_str.strip():
@@ -214,14 +245,17 @@ class OpenAIChatCompletionsLLM(LLMClient):
 def openai_llm_from_env(
     *, transport: Transport | None = None
 ) -> OpenAIChatCompletionsLLM:
-    config = load_openai_config_from_env()
+    config = load_openai_config_from_env(
+        reasoning_effort_env_vars=("OPENAI_REASONING_EFFORT_MAPPING",)
+    )
     return OpenAIChatCompletionsLLM(config, transport=transport)
 
 
 def openai_llm_for_tmdb_id_from_env(
     *, transport: Transport | None = None
 ) -> OpenAIChatCompletionsLLM:
-    config = load_openai_config_from_env()
-    # Use low reasoning effort for simple TMDB ID selection
-    config = replace(config, reasoning_effort="low")
+    config = load_openai_config_from_env(
+        reasoning_effort_env_vars=("OPENAI_REASONING_EFFORT_CHORE",),
+        default_reasoning_effort="low",
+    )
     return OpenAIChatCompletionsLLM(config, transport=transport)

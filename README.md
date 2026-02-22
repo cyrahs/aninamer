@@ -11,7 +11,8 @@ Required for `plan`, `run`, and `monitor`:
 
 Optional:
 - `OPENAI_BASE_URL` (override API base URL)
-- `OPENAI_REASONING_EFFORT` (forwarded to OpenAI responses)
+- `OPENAI_REASONING_EFFORT_CHORE` (for TMDB-title cleanup + TMDB-id selection LLM; default `low`)
+- `OPENAI_REASONING_EFFORT_MAPPING` (for episode-mapping LLM)
 - `OPENAI_TIMEOUT` (request timeout in seconds, default 60)
 
 `apply` does not require network credentials.

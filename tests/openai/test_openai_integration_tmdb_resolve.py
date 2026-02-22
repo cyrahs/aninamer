@@ -19,7 +19,7 @@ def test_resolve_tmdb_id_with_real_llm_smoke() -> None:
     if not (_env_present("OPENAI_API_KEY") and _env_present("OPENAI_MODEL")):
         pytest.skip("OPENAI_API_KEY and OPENAI_MODEL not set")
 
-    # IMPORTANT: this factory forces reasoning_effort="none" regardless of env
+    # Uses the TMDB-id reasoning profile (OPENAI_REASONING_EFFORT_CHORE, default low).
     llm = openai_llm_for_tmdb_id_from_env()
 
     dirname = "完全匹配作品名"

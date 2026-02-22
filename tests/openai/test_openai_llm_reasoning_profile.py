@@ -36,12 +36,11 @@ class CaptureTransport:
         return HttpResponse(status=200, body=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
 
 
-def test_openai_llm_for_tmdb_id_ignores_env_reasoning_effort(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Env includes reasoning=high, but TMDB-id client must force low.
+def test_openai_llm_for_tmdb_id_uses_tmdb_reasoning_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "KEY")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5.2")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com")
-    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_CHORE", "high")
 
     transport = CaptureTransport()
     llm = openai_llm_for_tmdb_id_from_env(transport=transport)
@@ -49,15 +48,15 @@ def test_openai_llm_for_tmdb_id_ignores_env_reasoning_effort(monkeypatch: pytest
     _ = llm.chat([ChatMessage(role="user", content='Return {"tmdb": 1} only.')], max_output_tokens=512)
 
     body = json.loads((transport.last_body or b"{}").decode("utf-8"))
-    assert body["reasoning_effort"] == "low"
+    assert body["reasoning_effort"] == "high"
     assert body["max_tokens"] == 512
 
 
-def test_openai_llm_from_env_still_respects_env_reasoning_effort(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_openai_llm_from_env_prefers_mapping_reasoning_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "KEY")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-5.2")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    monkeypatch.setenv("OPENAI_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_MAPPING", "high")
 
     transport = CaptureTransport()
     llm = openai_llm_from_env(transport=transport)
