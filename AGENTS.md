@@ -227,6 +227,10 @@ For each step:
 2. Add or update pytest tests that describe expected behavior.
 3. Run `pytest -q` until green.
 4. Avoid introducing unrelated refactors.
+5. After `git push`, monitor GitHub Actions for the pushed commit until completion and report:
+   - workflow/run URL
+   - final status/conclusion
+   - failed job/step summary when not successful
 
 When a step requires LLM:
 
