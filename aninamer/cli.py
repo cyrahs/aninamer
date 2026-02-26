@@ -47,6 +47,7 @@ from aninamer.tmdb_resolve import (
 )
 
 logger = logging.getLogger(__name__)
+MONITOR_ARCHIVE_DIR = "archive"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -182,7 +183,7 @@ def _build_parser() -> argparse.ArgumentParser:
     monitor_parser.add_argument(
         "--settle-seconds",
         type=int,
-        default=15,
+        default=30,
         help="Require directory contents to be unchanged for N seconds.",
     )
     monitor_parser.add_argument(
@@ -193,7 +194,7 @@ def _build_parser() -> argparse.ArgumentParser:
     monitor_parser.add_argument(
         "--include-existing",
         action="store_true",
-        help="Process existing directories instead of only new arrivals.",
+        help="Deprecated: existing directories are processed by default.",
     )
     monitor_parser.add_argument(
         "--two-stage",
@@ -532,19 +533,15 @@ def _ensure_not_within(
 
 @dataclass
 class MonitorState:
-    baseline: set[str]
     pending: set[str]
     planned: set[str]
-    processed: set[str]
     failed: set[str]
 
 
 def _empty_monitor_state() -> MonitorState:
     return MonitorState(
-        baseline=set(),
         pending=set(),
         planned=set(),
-        processed=set(),
         failed=set(),
     )
 
@@ -556,74 +553,38 @@ def _load_state_list(data: dict[str, object], field: str) -> set[str]:
     return set(value)
 
 
-def _load_monitor_state(path: Path) -> tuple[MonitorState, str]:
+def _load_monitor_state(path: Path) -> MonitorState:
     if not path.exists():
-        return _empty_monitor_state(), "missing"
+        return _empty_monitor_state()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("state must be an object")
         version = data.get("version")
-        if version == 1:
-            processed = _load_state_list(data, "processed")
-            return (
-                MonitorState(
-                    baseline=set(),
-                    pending=set(),
-                    planned=set(),
-                    processed=processed,
-                    failed=set(),
-                ),
-                "v1",
-            )
-        if version == 2:
-            baseline = _load_state_list(data, "baseline")
+        if version == 4:
             pending = _load_state_list(data, "pending")
             planned = _load_state_list(data, "planned")
-            processed = _load_state_list(data, "processed")
-            return (
-                MonitorState(
-                    baseline=baseline,
-                    pending=pending,
-                    planned=planned,
-                    processed=processed,
-                    failed=set(),
-                ),
-                "v2",
-            )
-        if version == 3:
-            baseline = _load_state_list(data, "baseline")
-            pending = _load_state_list(data, "pending")
-            planned = _load_state_list(data, "planned")
-            processed = _load_state_list(data, "processed")
             failed = _load_state_list(data, "failed")
-            return (
-                MonitorState(
-                    baseline=baseline,
-                    pending=pending,
-                    planned=planned,
-                    processed=processed,
-                    failed=failed,
-                ),
-                "v3",
+            return MonitorState(
+                pending=pending,
+                planned=planned,
+                failed=failed,
             )
-        raise ValueError("state version must be 1, 2, or 3")
+        raise ValueError("state version must be 4")
     except Exception as exc:
         logger.warning(
             "monitor: state_read_failed path=%s error=%s",
             path,
             exc,
         )
-        return _empty_monitor_state(), "invalid"
+        return _empty_monitor_state()
 
 
 def _write_monitor_state(path: Path, state: MonitorState) -> None:
     payload = {
-        "version": 3,
-        "baseline": sorted(state.baseline),
+        "version": 4,
         "pending": sorted(state.pending),
         "planned": sorted(state.planned),
-        "processed": sorted(state.processed),
         "failed": sorted(state.failed),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -667,10 +628,124 @@ def _discover_series_dirs(input_root: Path) -> list[Path]:
     except FileNotFoundError:
         return []
     series_dirs = [
-        path for path in entries if path.is_dir() and not path.name.startswith(".")
+        path
+        for path in entries
+        if path.is_dir()
+        and not path.name.startswith(".")
+        and path.name.casefold() != MONITOR_ARCHIVE_DIR
     ]
     series_dirs.sort(key=lambda path: path.name.casefold())
     return series_dirs
+
+
+def _snapshot_series_files(series_dir: Path) -> set[str]:
+    if not series_dir.exists() or not series_dir.is_dir():
+        return set()
+    files: set[str] = set()
+    for root, _dirs, names in os.walk(series_dir, followlinks=False):
+        root_path = Path(root)
+        for name in names:
+            file_path = root_path / name
+            files.add(file_path.relative_to(series_dir).as_posix())
+    return files
+
+
+def _plan_source_rel_paths(plan: RenamePlan, series_dir: Path) -> set[str]:
+    source_paths: set[str] = set()
+    resolved_series = series_dir.resolve(strict=False)
+    for move in plan.moves:
+        move_src = move.src.resolve(strict=False)
+        try:
+            rel = move_src.relative_to(resolved_series)
+        except ValueError:
+            continue
+        source_paths.add(rel.as_posix())
+    return source_paths
+
+
+def _prune_empty_tree(path: Path) -> bool:
+    if not path.exists():
+        return True
+    for root, _dirs, files in os.walk(path, topdown=False, followlinks=False):
+        if files:
+            continue
+        root_path = Path(root)
+        try:
+            root_path.rmdir()
+        except OSError:
+            continue
+    return not path.exists()
+
+
+def _next_archive_path(archive_root: Path, series_name: str) -> Path:
+    candidate = archive_root / series_name
+    if not candidate.exists():
+        return candidate
+    suffix = 1
+    while True:
+        candidate = archive_root / f"{series_name}.{suffix}"
+        if not candidate.exists():
+            return candidate
+        suffix += 1
+
+
+def _archive_series_dir(series_dir: Path) -> Path:
+    archive_root = series_dir.parent / MONITOR_ARCHIVE_DIR
+    archive_root.mkdir(parents=True, exist_ok=True)
+    archive_path = _next_archive_path(archive_root, series_dir.name)
+    series_dir.rename(archive_path)
+    return archive_path
+
+
+def _finalize_series_dir_after_apply(
+    series_dir: Path,
+    plan: RenamePlan,
+    *,
+    before_files: set[str],
+) -> bool:
+    after_files = _snapshot_series_files(series_dir)
+    expected_after = before_files - _plan_source_rel_paths(plan, series_dir)
+    if after_files != expected_after:
+        logger.info(
+            "monitor: source_changed_skip_finalize series_dir=%s expected_remaining=%s actual_remaining=%s",
+            series_dir,
+            len(expected_after),
+            len(after_files),
+        )
+        return False
+
+    if _prune_empty_tree(series_dir):
+        logger.info("monitor: source_deleted series_dir=%s", series_dir)
+        return True
+
+    archive_path = _archive_series_dir(series_dir)
+    logger.info(
+        "monitor: source_archived series_dir=%s archive_path=%s",
+        series_dir,
+        archive_path,
+    )
+    return True
+
+
+def _apply_monitor_plan(
+    plan: RenamePlan,
+    *,
+    rollback_file: Path,
+    two_stage: bool,
+) -> int:
+    before_files = _snapshot_series_files(plan.series_dir)
+    applied_count = _do_apply_from_plan(
+        plan,
+        rollback_file=rollback_file,
+        dry_run=False,
+        two_stage=two_stage,
+    )
+    _finalize_series_dir_after_apply(
+        plan.series_dir,
+        plan,
+        before_files=before_files,
+    )
+    return applied_count
 
 
 def _build_plan_from_args(
@@ -982,11 +1057,10 @@ def _monitor_loop(
         llm_for_mapping_factory() if llm_for_mapping_factory else openai_llm_from_env()
     )
 
-    baseline_bootstrapped = False
     output_roots = tuple(target.output_root for target in monitor_targets)
 
     while not shutdown_check():
-        state, state_origin = _load_monitor_state(state_file)
+        state = _load_monitor_state(state_file)
         resolved_map: dict[str, tuple[Path, Path]] = {}
         for target in monitor_targets:
             series_dirs = _discover_series_dirs(target.input_root)
@@ -1011,35 +1085,6 @@ def _monitor_loop(
         )
         current_dirs = set(resolved_map.keys())
 
-        if (
-            not args.include_existing
-            and not baseline_bootstrapped
-            and state_origin in ("missing", "v1", "invalid")
-        ):
-            baseline = current_dirs - state.processed
-            state = MonitorState(
-                baseline=baseline,
-                pending=set(),
-                planned=set(),
-                processed=set(state.processed),
-                failed=set(state.failed),
-            )
-            _write_monitor_state(state_file, state)
-            logger.info(
-                "monitor: baseline_bootstrap baseline_count=%s",
-                len(baseline),
-            )
-            baseline_bootstrapped = True
-            if args.once:
-                break
-            # Sleep in small increments to allow faster shutdown response
-            sleep_remaining = args.interval
-            while sleep_remaining > 0 and not shutdown_check():
-                sleep_chunk = min(sleep_remaining, 1.0)
-                time.sleep(sleep_chunk)
-                sleep_remaining -= sleep_chunk
-            continue
-
         # Clean up failed entries from pending/planned
         failed_cleanup_dirty = False
         if state.failed:
@@ -1057,14 +1102,8 @@ def _monitor_loop(
         for resolved, (series_dir, _output_root) in sorted(
             resolved_map.items(), key=lambda item: item[0]
         ):
-            if resolved in state.processed:
-                logger.debug("monitor: skip_processed series_dir=%s", series_dir)
-                continue
             if resolved in state.failed:
                 logger.debug("monitor: skip_failed series_dir=%s", series_dir)
-                continue
-            if not args.include_existing and resolved in state.baseline:
-                logger.debug("monitor: skip_baseline series_dir=%s", series_dir)
                 continue
             if resolved in state.planned or resolved in state.pending:
                 continue
@@ -1089,10 +1128,9 @@ def _monitor_loop(
                 )
                 try:
                     plan = read_rename_plan_json(plan_path)
-                    applied_count = _do_apply_from_plan(
+                    applied_count = _apply_monitor_plan(
                         plan,
                         rollback_file=rollback_path,
-                        dry_run=False,
                         two_stage=args.two_stage,
                     )
                     logger.info(
@@ -1101,7 +1139,6 @@ def _monitor_loop(
                         applied_count,
                     )
                     state.planned.discard(resolved)
-                    state.processed.add(resolved)
                     _write_monitor_state(state_file, state)
                 except Exception as exc:
                     logger.exception(
@@ -1173,10 +1210,9 @@ def _monitor_loop(
                 _write_monitor_state(state_file, state)
 
                 if args.apply:
-                    applied_count = _do_apply_from_plan(
+                    applied_count = _apply_monitor_plan(
                         plan,
                         rollback_file=rollback_path,
-                        dry_run=False,
                         two_stage=args.two_stage,
                     )
                     logger.info(
@@ -1185,7 +1221,6 @@ def _monitor_loop(
                         applied_count,
                     )
                     state.planned.discard(resolved)
-                    state.processed.add(resolved)
                     _write_monitor_state(state_file, state)
             except Exception as exc:
                 logger.exception(

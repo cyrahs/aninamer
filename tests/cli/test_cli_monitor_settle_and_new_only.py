@@ -129,9 +129,7 @@ class FakeTMDBClientMonitor:
         return details.name, details
 
 
-def test_monitor_first_run_bootstraps_baseline_and_skips_existing_by_default(
-    tmp_path: Path,
-) -> None:
+def test_monitor_first_run_processes_existing_by_default(tmp_path: Path) -> None:
     in_root = tmp_path / "in_mount"
     out_root = tmp_path / "out_mount"
     log_path = tmp_path / "logs"
@@ -161,31 +159,31 @@ def test_monitor_first_run_bootstraps_baseline_and_skips_existing_by_default(
     )
     assert rc == 0
 
-    # Should NOT process existing dir on first run (baseline bootstrap)
-    assert (show_old / "ep1.mkv").exists()
-    assert not any(out_root.rglob("*.mkv"))
+    # Existing dir should be processed on first run.
+    dst_video = (
+        out_root / "测试动画Old (2019) {tmdb-100}" / "S01" / "测试动画Old S01E01.mkv"
+    )
+    assert dst_video.exists()
+    assert not show_old.exists()
 
-    # State file should exist and contain baseline, version 3
+    # State file should exist and record processed dir.
     state_file = log_path / "monitor_state.json"
     assert state_file.exists()
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 3
-    assert data.get("failed", []) == []
-    assert str(show_old.resolve()) in set(data["baseline"])
-    assert data.get("pending", []) == []
-    assert data.get("planned", []) == []
-    assert data.get("processed", []) == []
+    assert data["version"] == 4
+    assert data["failed"] == []
+    assert data["pending"] == []
+    assert data["planned"] == []
 
-    # No LLM mapping calls should have happened
-    assert llm_map.calls == 0
+    assert llm_map.calls == 1
 
 
-def test_monitor_second_run_processes_new_dir(tmp_path: Path) -> None:
+def test_monitor_second_run_processes_another_dir(tmp_path: Path) -> None:
     in_root = tmp_path / "in_mount"
     out_root = tmp_path / "out_mount"
     log_path = tmp_path / "logs"
 
-    # First run: baseline bootstrap with an existing dir
+    # First run: process existing dir.
     show_old = in_root / "ShowOld [1080p]"
     _write(show_old / "ep1.mkv", b"video_old")
     _write(show_old / "ep1.ass", "国国国".encode("utf-8"))
@@ -210,9 +208,9 @@ def test_monitor_second_run_processes_new_dir(tmp_path: Path) -> None:
         llm_for_mapping_factory=lambda: llm_map,
     )
     assert rc1 == 0
-    assert llm_map.calls == 0
+    assert llm_map.calls == 1
 
-    # Add a NEW dir after baseline
+    # Add another dir for the next run.
     show_new = in_root / "ShowNew [1080p]"
     _write(show_new / "ep1.mkv", b"video_new")
     _write(show_new / "ep1.ass", "国国国".encode("utf-8"))
@@ -234,7 +232,7 @@ def test_monitor_second_run_processes_new_dir(tmp_path: Path) -> None:
         llm_for_mapping_factory=lambda: llm_map,
     )
     assert rc2 == 0
-    assert llm_map.calls == 1
+    assert llm_map.calls == 2
 
     # New dir should have been processed and moved
     dst_video = (
@@ -246,7 +244,9 @@ def test_monitor_second_run_processes_new_dir(tmp_path: Path) -> None:
     # State should record processed
     state_file = log_path / "monitor_state.json"
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert str(show_new.resolve()) in set(data["processed"])
+    assert data["pending"] == []
+    assert data["planned"] == []
+    assert data["failed"] == []
 
 
 def test_monitor_settle_seconds_defers_processing_until_stable(tmp_path: Path) -> None:
@@ -254,7 +254,7 @@ def test_monitor_settle_seconds_defers_processing_until_stable(tmp_path: Path) -
     out_root = tmp_path / "out_mount"
     log_path = tmp_path / "logs"
 
-    # Bootstrap baseline with empty root (creates state)
+    # Run once with empty root to create state file.
     tmdb = FakeTMDBClientMonitor()
     llm_map = FakeLLMMapping()
 
@@ -277,7 +277,7 @@ def test_monitor_settle_seconds_defers_processing_until_stable(tmp_path: Path) -
     assert rc0 == 0
     assert llm_map.calls == 0
 
-    # Create a NEW dir; it will be pending but NOT settled yet
+    # Create a dir; it will be pending but NOT settled yet.
     show_p = in_root / "ShowPending [1080p]"
     _write(show_p / "ep1.mkv", b"video_pending")
     _write(show_p / "ep1.ass", "国国国".encode("utf-8"))

@@ -79,11 +79,14 @@ The `monitor` command watches an input directory for new series folders and auto
 
 ### How it works
 
-1. On first run, monitor records all existing directories as a **baseline** (skipped by default).
-2. It periodically scans for new directories not in the baseline.
-3. New directories enter a **pending** state and must remain unchanged for a settle period (default 15 seconds) to ensure downloads are complete.
-4. Once settled, the directory is planned and optionally applied.
-5. State is persisted to a JSON file, surviving restarts.
+1. It periodically scans source roots for series directories (excluding `archive/` by default).
+2. Discovered directories enter a **pending** state and must remain unchanged for a settle period (default 30 seconds) to ensure downloads are complete.
+3. Once settled, the directory is planned and optionally applied.
+4. After a successful apply:
+   - empty source directories are deleted
+   - non-empty source directories are moved to `archive/` under the same source root (with suffixes on name collisions)
+5. If new files appear during processing, monitor skips directory cleanup/archive and leaves the directory for a later run.
+6. State is persisted to a JSON file, surviving restarts.
 
 ### Monitor options
 
@@ -92,10 +95,10 @@ The `monitor` command watches an input directory for new series folders and auto
 | `--apply` | off | Apply renames (otherwise plan-only) |
 | `--once` | off | Run one iteration and exit |
 | `--interval` | 60 | Seconds between scan iterations |
-| `--settle-seconds` | 15 | Directory must be unchanged for N seconds before processing |
+| `--settle-seconds` | 30 | Directory must be unchanged for N seconds before processing |
 | `--state-file` | `<log-path>/monitor_state.json` | Path to state file |
 | `--watch SRC DST` | required | Source/output pair (repeatable) |
-| `--include-existing` | off | Process existing directories instead of only new arrivals |
+| `--include-existing` | off | Deprecated (existing directories are processed by default) |
 | `--two-stage` | off | Use two-stage moves with staging temp dir |
 | `--tmdb` | - | Force a specific TMDB TV id for all series |
 | `--max-candidates` | 5 | Max TMDB candidates for LLM selection |
@@ -171,10 +174,8 @@ docker stop aninamer-monitor
 ### State file
 
 The state file (`monitor_state.json`) tracks:
-- **baseline**: directories present on first run (skipped unless `--include-existing`)
 - **pending**: directories waiting to settle
 - **planned**: directories with generated plans (awaiting apply)
-- **processed**: successfully processed directories
 - **failed**: directories that encountered errors
 
 To reprocess a failed directory, remove it from the `failed` set in the state file and restart the monitor.

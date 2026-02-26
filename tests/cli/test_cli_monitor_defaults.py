@@ -218,21 +218,23 @@ def test_cli_monitor_once_apply_processes_each_subdir_and_writes_state(
     # Sources removed
     assert not (show_a / "ep1.mkv").exists()
     assert not (show_b / "ep1.mkv").exists()
+    assert not show_a.exists()
+    assert not show_b.exists()
 
     # State file written and includes both series dirs
     assert state_file.exists()
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 3
-    processed = set(data["processed"])
-    assert str(show_a.resolve()) in processed
-    assert str(show_b.resolve()) in processed
+    assert data["version"] == 4
+    assert data["pending"] == []
+    assert data["planned"] == []
+    assert data["failed"] == []
 
     # Mapping LLM called twice (once per show)
     assert llm_map.calls == 2
     # TMDB-id selection LLM not called (single candidate shortcut)
     assert llm_id.calls == 0
 
-    # Second monitor run should skip processed dirs => no additional LLM calls
+    # Second monitor run should have no additional work.
     rc2 = main(
         [
             "--log-path",
