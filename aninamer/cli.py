@@ -152,10 +152,17 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     monitor_parser = subparsers.add_parser(
-        "monitor", help="Monitor input root for series directories."
+        "monitor", help="Monitor source roots for series directories."
     )
-    monitor_parser.add_argument("input_root", type=Path, help="Input root directory.")
-    monitor_parser.add_argument("--out", type=Path, required=True, help="Output root.")
+    monitor_parser.add_argument(
+        "--watch",
+        type=Path,
+        nargs=2,
+        action="append",
+        required=True,
+        metavar=("SRC", "DST"),
+        help="Source/output pair; repeat to monitor multiple roots.",
+    )
     monitor_parser.add_argument(
         "--apply",
         action="store_true",
@@ -429,6 +436,44 @@ def _safe_filename_component(name: str, *, max_len: int = 80) -> str:
     return cleaned
 
 
+@dataclass(frozen=True)
+class MonitorTarget:
+    input_root: Path
+    output_root: Path
+
+
+def _monitor_targets_from_args(args: argparse.Namespace) -> tuple[MonitorTarget, ...]:
+    raw_pairs: list[tuple[Path, Path]] = []
+    extra_pairs = args.watch or []
+    for pair in extra_pairs:
+        if len(pair) != 2:
+            raise ValueError("--watch requires SRC and DST")
+        src, dst = pair
+        raw_pairs.append((src, dst))
+    if not raw_pairs:
+        raise ValueError("at least one --watch SRC DST pair is required")
+
+    deduped: list[MonitorTarget] = []
+    seen_output_by_input: dict[Path, Path] = {}
+    for input_root, output_root in raw_pairs:
+        input_resolved = Path(input_root).resolve(strict=False)
+        output_resolved = Path(output_root).resolve(strict=False)
+        previous_output = seen_output_by_input.get(input_resolved)
+        if previous_output is not None:
+            if previous_output != output_resolved:
+                raise ValueError(
+                    "input_root "
+                    f"{input_resolved} is configured with multiple output roots: "
+                    f"{previous_output} and {output_resolved}"
+                )
+            continue
+        seen_output_by_input[input_resolved] = output_resolved
+        deduped.append(
+            MonitorTarget(input_root=Path(input_root), output_root=Path(output_root))
+        )
+    return tuple(deduped)
+
+
 def _hash8_for_path(p: Path) -> str:
     resolved = p.resolve(strict=False)
     digest = hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()
@@ -468,10 +513,18 @@ def _is_within(child: Path, root: Path) -> bool:
 def _ensure_not_within(
     artifact: Path,
     series_dir: Path,
-    output_root: Path,
+    output_root: Path | Sequence[Path],
     label: str,
 ) -> None:
-    if _is_within(artifact, series_dir) or _is_within(artifact, output_root):
+    output_roots: tuple[Path, ...]
+    if isinstance(output_root, Path):
+        output_roots = (output_root,)
+    else:
+        output_roots = tuple(output_root)
+
+    if _is_within(artifact, series_dir) or any(
+        _is_within(artifact, root) for root in output_roots
+    ):
         raise ValueError(
             f"Refusing to write {label} under series_dir/output_root. Use --log-path or choose a different path."
         )
@@ -856,21 +909,27 @@ def _run_monitor(
     llm_for_tmdb_id_factory: Callable[[], LLMClient] | None,
     llm_for_mapping_factory: Callable[[], LLMClient] | None,
 ) -> int:
-    input_root = args.input_root
-    output_root = args.out
+    monitor_targets = _monitor_targets_from_args(args)
+    output_roots = tuple(target.output_root for target in monitor_targets)
     log_path = Path(args.log_path)
     state_file = args.state_file or (log_path / "monitor_state.json")
-    _ensure_not_within(state_file, input_root, output_root, "state file")
+    for target in monitor_targets:
+        _ensure_not_within(state_file, target.input_root, output_roots, "state file")
 
     logger.info(
-        "monitor: start input_root=%s out_root=%s apply=%s once=%s interval=%s settle_seconds=%s",
-        input_root,
-        output_root,
+        "monitor: start target_count=%s apply=%s once=%s interval=%s settle_seconds=%s",
+        len(monitor_targets),
         args.apply,
         args.once,
         args.interval,
         args.settle_seconds,
     )
+    for target in monitor_targets:
+        logger.info(
+            "monitor: target input_root=%s out_root=%s",
+            target.input_root,
+            target.output_root,
+        )
 
     # Set up signal handling for graceful shutdown
     shutdown_requested = False
@@ -887,8 +946,7 @@ def _run_monitor(
     try:
         return _monitor_loop(
             args,
-            input_root=input_root,
-            output_root=output_root,
+            monitor_targets=monitor_targets,
             log_path=log_path,
             state_file=state_file,
             tmdb_client_factory=tmdb_client_factory,
@@ -904,8 +962,7 @@ def _run_monitor(
 def _monitor_loop(
     args: argparse.Namespace,
     *,
-    input_root: Path,
-    output_root: Path,
+    monitor_targets: tuple[MonitorTarget, ...],
     log_path: Path,
     state_file: Path,
     tmdb_client_factory: Callable[[], TMDBClient] | None,
@@ -926,15 +983,32 @@ def _monitor_loop(
     )
 
     baseline_bootstrapped = False
+    output_roots = tuple(target.output_root for target in monitor_targets)
 
     while not shutdown_check():
         state, state_origin = _load_monitor_state(state_file)
-        series_dirs = _discover_series_dirs(input_root)
-        logger.debug("monitor: discovered count=%s", len(series_dirs))
-        resolved_map = {
-            str(series_dir.resolve(strict=False)): series_dir
-            for series_dir in series_dirs
-        }
+        resolved_map: dict[str, tuple[Path, Path]] = {}
+        for target in monitor_targets:
+            series_dirs = _discover_series_dirs(target.input_root)
+            for series_dir in series_dirs:
+                resolved = str(series_dir.resolve(strict=False))
+                existing = resolved_map.get(resolved)
+                if existing is None:
+                    resolved_map[resolved] = (series_dir, target.output_root)
+                    continue
+                existing_output = existing[1].resolve(strict=False)
+                new_output = target.output_root.resolve(strict=False)
+                if existing_output != new_output:
+                    raise ValueError(
+                        "series directory "
+                        f"{resolved} appears in multiple monitor targets with "
+                        f"different output roots: {existing_output} and {new_output}"
+                    )
+        logger.debug(
+            "monitor: discovered count=%s target_count=%s",
+            len(resolved_map),
+            len(monitor_targets),
+        )
         current_dirs = set(resolved_map.keys())
 
         if (
@@ -980,8 +1054,9 @@ def _monitor_loop(
 
         # Discover new directories and add to pending
         new_pending_dirty = False
-        for series_dir in series_dirs:
-            resolved = str(series_dir.resolve(strict=False))
+        for resolved, (series_dir, _output_root) in sorted(
+            resolved_map.items(), key=lambda item: item[0]
+        ):
             if resolved in state.processed:
                 logger.debug("monitor: skip_processed series_dir=%s", series_dir)
                 continue
@@ -1005,11 +1080,12 @@ def _monitor_loop(
                     state.planned.discard(resolved)
                     _write_monitor_state(state_file, state)
                     continue
-                series_dir = resolved_map.get(resolved, Path(resolved))
+                mapped = resolved_map.get(resolved)
+                series_dir = mapped[0] if mapped is not None else Path(resolved)
                 plan_path, rollback_path = _default_plan_paths(log_path, series_dir)
-                _ensure_not_within(plan_path, series_dir, output_root, "plan file")
+                _ensure_not_within(plan_path, series_dir, output_roots, "plan file")
                 _ensure_not_within(
-                    rollback_path, series_dir, output_root, "rollback file"
+                    rollback_path, series_dir, output_roots, "rollback file"
                 )
                 try:
                     plan = read_rename_plan_json(plan_path)
@@ -1043,7 +1119,10 @@ def _monitor_loop(
                 state.pending.discard(resolved)
                 _write_monitor_state(state_file, state)
                 continue
-            series_dir = resolved_map.get(resolved, Path(resolved))
+            mapped = resolved_map.get(resolved)
+            if mapped is None:
+                continue
+            series_dir, output_root = mapped
             if resolved not in current_dirs:
                 continue
             if args.settle_seconds > 0:
@@ -1059,10 +1138,10 @@ def _monitor_loop(
                     continue
 
             plan_path, rollback_path = _default_plan_paths(log_path, series_dir)
-            _ensure_not_within(plan_path, series_dir, output_root, "plan file")
+            _ensure_not_within(plan_path, series_dir, output_roots, "plan file")
             if args.apply:
                 _ensure_not_within(
-                    rollback_path, series_dir, output_root, "rollback file"
+                    rollback_path, series_dir, output_roots, "rollback file"
                 )
             plan_args = argparse.Namespace(
                 series_dir=series_dir,
@@ -1164,7 +1243,12 @@ def main(
         elif args.command in ("plan", "run"):
             _ensure_not_within(log_path, args.series_dir, args.out, "log path")
         elif args.command == "monitor":
-            _ensure_not_within(log_path, args.input_root, args.out, "log path")
+            monitor_targets = _monitor_targets_from_args(args)
+            output_roots = tuple(target.output_root for target in monitor_targets)
+            for target in monitor_targets:
+                _ensure_not_within(
+                    log_path, target.input_root, output_roots, "log path"
+                )
     except (OSError, PlanValidationError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

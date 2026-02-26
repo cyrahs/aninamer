@@ -94,6 +94,7 @@ The `monitor` command watches an input directory for new series folders and auto
 | `--interval` | 60 | Seconds between scan iterations |
 | `--settle-seconds` | 15 | Directory must be unchanged for N seconds before processing |
 | `--state-file` | `<log-path>/monitor_state.json` | Path to state file |
+| `--watch SRC DST` | required | Source/output pair (repeatable) |
 | `--include-existing` | off | Process existing directories instead of only new arrivals |
 | `--two-stage` | off | Use two-stage moves with staging temp dir |
 | `--tmdb` | - | Force a specific TMDB TV id for all series |
@@ -113,7 +114,7 @@ docker run -d --name aninamer-monitor \
   -v "/path/to/downloads:/input:ro" \
   -v "/path/to/library:/output" \
   -v "/path/to/logs:/logs" \
-  aninamer monitor /input --out /output --log-path /logs
+  aninamer monitor --watch /input /output --log-path /logs
 ```
 
 ### Docker example (with apply, continuous)
@@ -128,7 +129,7 @@ docker run -d --name aninamer-monitor \
   -v "/path/to/downloads:/input" \
   -v "/path/to/library:/output" \
   -v "/path/to/logs:/logs" \
-  aninamer monitor /input --out /output --log-path /logs --apply
+  aninamer monitor --watch /input /output --log-path /logs --apply
 ```
 
 ### Docker example (single run, include existing)
@@ -144,8 +145,19 @@ docker run --rm -it \
   -v "/path/to/downloads:/input" \
   -v "/path/to/library:/output" \
   -v "/path/to/logs:/logs" \
-  aninamer monitor /input --out /output --log-path /logs \
+  aninamer monitor --watch /input /output --log-path /logs \
     --once --include-existing --apply
+```
+
+### Monitor multiple source/output pairs
+
+Use one or more `--watch SRC DST` pairs:
+
+```sh
+aninamer monitor --watch /downloads/a /library/a \
+  --watch /downloads/b /library/b \
+  --watch /downloads/c /library/c \
+  --log-path /logs --apply
 ```
 
 ### Graceful shutdown
