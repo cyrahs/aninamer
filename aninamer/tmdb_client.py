@@ -72,6 +72,7 @@ class TvDetails:
     original_name: str | None
     first_air_date: str | None
     seasons: list[SeasonSummary]
+    poster_path: str | None = None
 
     @property
     def year(self) -> int | None:
@@ -337,6 +338,7 @@ class TMDBClient:
             original_name=_optional_str(data.get("original_name")),
             first_air_date=_optional_str(data.get("first_air_date")),
             seasons=seasons,
+            poster_path=_optional_str(data.get("poster_path")),
         )
 
     def get_season(

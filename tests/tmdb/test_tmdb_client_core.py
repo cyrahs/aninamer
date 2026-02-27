@@ -84,6 +84,7 @@ def test_get_tv_details_parses_and_sorts_seasons() -> None:
         "name": "Show",
         "original_name": "Original",
         "first_air_date": "2019-03-04",
+        "poster_path": "/poster.jpg",
         "seasons": [
             {"season_number": 2, "episode_count": 12},
             {"season_number": 1, "episode_count": 10},
@@ -99,6 +100,7 @@ def test_get_tv_details_parses_and_sorts_seasons() -> None:
     assert details.id == 99
     assert details.name == "Show"
     assert details.year == 2019
+    assert details.poster_path == "/poster.jpg"
     assert [s.season_number for s in details.seasons] == [1, 2]
     assert [s.episode_count for s in details.seasons] == [10, 12]
 

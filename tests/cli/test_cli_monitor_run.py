@@ -9,6 +9,7 @@ from typing import Sequence
 
 import aninamer.cli as cli_module
 from aninamer.cli import _default_plan_paths, _is_settled, main
+from aninamer.errors import TelegramError
 from aninamer.tmdb_client import SeasonSummary, TvDetails, TvSearchResult
 
 
@@ -56,6 +57,38 @@ class FakeTMDB:
         return self.details.name, self.details
 
 
+@dataclass
+class FakeNotifier:
+    messages: list[str]
+    photos: list[tuple[str, str | None]]
+
+    def send_message(self, text: str, *, parse_mode: str | None = None) -> None:
+        self.messages.append(text)
+
+    def send_photo(
+        self,
+        photo_url: str,
+        *,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+    ) -> None:
+        self.photos.append((photo_url, caption))
+
+
+class FailingNotifier:
+    def send_message(self, text: str, *, parse_mode: str | None = None) -> None:
+        raise TelegramError("notify failed")
+
+    def send_photo(
+        self,
+        photo_url: str,
+        *,
+        caption: str | None = None,
+        parse_mode: str | None = None,
+    ) -> None:
+        raise TelegramError("notify failed")
+
+
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -79,6 +112,7 @@ def test_cli_monitor_once_plans_without_apply(tmp_path: Path) -> None:
         original_name=None,
         first_air_date="2020-01-01",
         seasons=[SeasonSummary(season_number=1, episode_count=1)],
+        poster_path="/cover.jpg",
     )
     tmdb = FakeTMDB(details=details)
     mapping_llm = FakeLLM(
@@ -158,6 +192,7 @@ def test_cli_monitor_once_pending_when_not_settled(tmp_path: Path) -> None:
         original_name=None,
         first_air_date="2020-01-01",
         seasons=[SeasonSummary(season_number=1, episode_count=1)],
+        poster_path="/cover.jpg",
     )
     tmdb = FakeTMDB(details=details)
     mapping_llm = FakeLLM(
@@ -216,6 +251,7 @@ def test_cli_monitor_apply_marks_state_and_moves(tmp_path: Path) -> None:
         original_name=None,
         first_air_date="2020-01-01",
         seasons=[SeasonSummary(season_number=1, episode_count=1)],
+        poster_path="/cover.jpg",
     )
     tmdb = FakeTMDB(details=details)
     mapping_llm = FakeLLM(
@@ -370,6 +406,115 @@ def test_cli_monitor_apply_archives_non_empty_dir_and_ignores_archive(tmp_path: 
     )
     assert rc2 == 0
     assert mapping_llm.calls == 1
+
+
+def test_cli_monitor_apply_sends_telegram_summary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_root = tmp_path / "Input"
+    series_dir = input_root / "SeriesA"
+    _write(series_dir / "ep1.mkv", b"video")
+    _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
+    _write(series_dir / "note.txt", b"keep")
+
+    out_root = tmp_path / "Out"
+    log_path = tmp_path / "logs"
+
+    details = TvDetails(
+        id=123,
+        name="Show",
+        original_name=None,
+        first_air_date="2020-01-01",
+        seasons=[SeasonSummary(season_number=1, episode_count=1)],
+        poster_path="/cover.jpg",
+    )
+    tmdb = FakeTMDB(details=details)
+    mapping_llm = FakeLLM(
+        reply='{"tmdb":123,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[2]}]}'
+    )
+    notifier = FakeNotifier(messages=[], photos=[])
+    monkeypatch.setattr(cli_module, "_telegram_notifier_from_args", lambda _args: notifier)
+
+    rc = main(
+        [
+            "--log-path",
+            str(log_path),
+            "monitor",
+            "--watch",
+            str(input_root),
+            str(out_root),
+            "--once",
+            "--apply",
+            "--tmdb",
+            "123",
+            "--settle-seconds",
+            "0",
+        ],
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_mapping_factory=lambda: mapping_llm,
+    )
+
+    assert rc == 0
+    assert len(notifier.photos) == 1
+    photo_url, message = notifier.photos[0]
+    assert photo_url == "https://image.tmdb.org/t/p/w500/cover.jpg"
+    assert "Aninamer 归档成功" in message
+    assert "*Show*" in message
+    assert r"\(TMDB: [123](https://www.themoviedb.org/tv/123)\)" in message
+    assert "目录: SeriesA" in message
+    assert "视频: 1" in message
+    assert "字幕: 1" in message
+    assert notifier.messages == []
+
+
+def test_cli_monitor_ignores_telegram_send_failures(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_root = tmp_path / "Input"
+    series_dir = input_root / "SeriesA"
+    _write(series_dir / "ep1.mkv", b"video")
+    _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
+
+    out_root = tmp_path / "Out"
+    log_path = tmp_path / "logs"
+
+    details = TvDetails(
+        id=123,
+        name="Show",
+        original_name=None,
+        first_air_date="2020-01-01",
+        seasons=[SeasonSummary(season_number=1, episode_count=1)],
+    )
+    tmdb = FakeTMDB(details=details)
+    mapping_llm = FakeLLM(
+        reply='{"tmdb":123,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[2]}]}'
+    )
+    monkeypatch.setattr(
+        cli_module, "_telegram_notifier_from_args", lambda _args: FailingNotifier()
+    )
+
+    rc = main(
+        [
+            "--log-path",
+            str(log_path),
+            "monitor",
+            "--watch",
+            str(input_root),
+            str(out_root),
+            "--once",
+            "--apply",
+            "--tmdb",
+            "123",
+            "--settle-seconds",
+            "0",
+        ],
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_mapping_factory=lambda: mapping_llm,
+    )
+
+    assert rc == 0
+    series_folder = out_root / "Show (2020) {tmdb-123}"
+    assert (series_folder / "S01" / "Show S01E01.mkv").exists()
 
 
 def test_cli_monitor_archive_name_collision_appends_suffix(tmp_path: Path) -> None:
@@ -555,3 +700,50 @@ def test_cli_monitor_marks_failed_and_skips_future_runs(tmp_path: Path) -> None:
     )
     assert rc2 == 0
     assert mapping_llm.calls == calls_after_first
+
+
+def test_cli_monitor_failure_sends_telegram_error(tmp_path: Path, monkeypatch) -> None:
+    input_root = tmp_path / "Input"
+    series_dir = input_root / "SeriesFail"
+    _write(series_dir / "ep1.mkv", b"video")
+    _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
+
+    out_root = tmp_path / "Out"
+    log_path = tmp_path / "logs"
+
+    details = TvDetails(
+        id=123,
+        name="Show",
+        original_name=None,
+        first_air_date="2020-01-01",
+        seasons=[SeasonSummary(season_number=1, episode_count=1)],
+    )
+    tmdb = FakeTMDB(details=details)
+    mapping_llm = FakeLLM(reply="not json")
+    notifier = FakeNotifier(messages=[], photos=[])
+    monkeypatch.setattr(cli_module, "_telegram_notifier_from_args", lambda _args: notifier)
+
+    rc = main(
+        [
+            "--log-path",
+            str(log_path),
+            "monitor",
+            "--watch",
+            str(input_root),
+            str(out_root),
+            "--once",
+            "--tmdb",
+            "123",
+            "--settle-seconds",
+            "0",
+        ],
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_mapping_factory=lambda: mapping_llm,
+    )
+
+    assert rc == 0
+    assert len(notifier.messages) == 1
+    message = notifier.messages[0]
+    assert "Aninamer 归档失败" in message
+    assert "目录: SeriesFail" in message
+    assert "阶段: 生成计划" in message

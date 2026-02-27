@@ -14,6 +14,8 @@ Optional:
 - `OPENAI_REASONING_EFFORT_CHORE` (for TMDB-title cleanup + TMDB-id selection LLM; default `low`)
 - `OPENAI_REASONING_EFFORT_MAPPING` (for episode-mapping LLM)
 - `OPENAI_TIMEOUT` (request timeout in seconds, default 60)
+- `ANINAMER_TELEGRAM_BOT_TOKEN` (optional monitor notifications)
+- `ANINAMER_TELEGRAM_CHAT_ID` (optional monitor notifications)
 
 `apply` does not require network credentials.
 
@@ -104,6 +106,8 @@ The `monitor` command watches an input directory for new series folders and auto
 | `--max-candidates` | 5 | Max TMDB candidates for LLM selection |
 | `--max-output-tokens` | 2048 | Max output tokens for mapping LLM |
 | `--allow-existing-dest` | off | Allow pre-existing destinations |
+| `--telegram-bot-token` | - | Telegram bot token for summary/error notifications |
+| `--telegram-chat-id` | - | Telegram chat id for summary/error notifications |
 
 ### Docker example (plan-only, continuous)
 

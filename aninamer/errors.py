@@ -19,3 +19,7 @@ class OpenAIError(AninamerError):
 
 class ApplyError(AninamerError):
     pass
+
+
+class TelegramError(AninamerError):
+    pass

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import json
 import logging
@@ -10,7 +11,7 @@ import signal
 import sys
 from pathlib import Path
 import time
-from typing import Callable, Sequence
+from typing import Callable, Literal, Sequence
 
 from aninamer import __version__
 from aninamer.apply import apply_rename_plan
@@ -20,6 +21,7 @@ from aninamer.errors import (
     LLMOutputError,
     OpenAIError,
     PlanValidationError,
+    TelegramError,
 )
 from aninamer.llm_client import LLMClient
 from aninamer.logging_utils import configure_logging
@@ -39,8 +41,10 @@ from aninamer.scanner import SKIP_DIR_NAMES, scan_series_dir
 from aninamer.tmdb_client import (
     TMDBClient,
     TMDBError,
+    TvDetails,
     TvSearchResult,
 )
+from aninamer.telegram import TelegramNotifier, load_telegram_config
 from aninamer.tmdb_resolve import (
     resolve_tmdb_search_title_with_llm,
     resolve_tmdb_tv_id_with_llm,
@@ -218,6 +222,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-existing-dest",
         action="store_true",
         help="Allow pre-existing destinations.",
+    )
+    monitor_parser.add_argument(
+        "--telegram-bot-token",
+        help="Telegram bot token for monitor notifications.",
+    )
+    monitor_parser.add_argument(
+        "--telegram-chat-id",
+        help="Telegram chat id for monitor notifications.",
     )
 
     return parser
@@ -443,6 +455,18 @@ class MonitorTarget:
     output_root: Path
 
 
+@dataclass(frozen=True)
+class MonitorFinalizeResult:
+    status: Literal["deleted", "archived", "skipped"]
+    archive_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class MonitorApplyResult:
+    applied_count: int
+    finalize: MonitorFinalizeResult
+
+
 def _monitor_targets_from_args(args: argparse.Namespace) -> tuple[MonitorTarget, ...]:
     raw_pairs: list[tuple[Path, Path]] = []
     extra_pairs = args.watch or []
@@ -499,6 +523,138 @@ def _default_rollback_path_from_plan(log_path: Path, plan_path: Path) -> Path:
     else:
         filename = f"{plan_path.stem}.rollback_plan.json"
     return plans_dir / filename
+
+
+def _telegram_notifier_from_args(args: argparse.Namespace) -> TelegramNotifier | None:
+    bot_token = getattr(args, "telegram_bot_token", None)
+    chat_id = getattr(args, "telegram_chat_id", None)
+    config = load_telegram_config(bot_token=bot_token, chat_id=chat_id)
+    if config is None:
+        return None
+    return TelegramNotifier(config)
+
+
+def _truncate_telegram_text(text: str, *, max_chars: int = 3900) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
+def _truncate_telegram_caption(text: str, *, max_chars: int = 1000) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
+_MARKDOWN_V2_SPECIAL_CHARS = set(r"_*[]()~`>#+-=|{}.!\\")
+
+
+def _escape_markdown_v2(text: str) -> str:
+    escaped: list[str] = []
+    for ch in text:
+        if ch in _MARKDOWN_V2_SPECIAL_CHARS:
+            escaped.append(f"\\{ch}")
+        else:
+            escaped.append(ch)
+    return "".join(escaped)
+
+
+def _notify_telegram(
+    notifier: TelegramNotifier | None,
+    text: str,
+    *,
+    parse_mode: str | None = None,
+) -> None:
+    if notifier is None:
+        return
+    try:
+        notifier.send_message(_truncate_telegram_text(text), parse_mode=parse_mode)
+    except TelegramError as exc:
+        logger.warning("telegram: notify_failed error=%s", exc)
+
+
+def _notify_monitor_success(
+    notifier: TelegramNotifier | None,
+    *,
+    plan: RenamePlan,
+    poster_url: str | None = None,
+) -> None:
+    video_moves = sum(1 for move in plan.moves if move.kind == "video")
+    subtitle_moves = sum(1 for move in plan.moves if move.kind == "subtitle")
+    tmdb_url = f"https://www.themoviedb.org/tv/{plan.tmdb_id}"
+    title_text = _escape_markdown_v2(plan.series_name_zh_cn)
+    dir_text = _escape_markdown_v2(plan.series_dir.name)
+    tmdb_text = _escape_markdown_v2(str(plan.tmdb_id))
+    message = "\n".join(
+        [
+            "Aninamer 归档成功",
+            f"*{title_text}*  \\(TMDB: [{tmdb_text}]({tmdb_url})\\)",
+            f"目录: {dir_text}",
+            f"视频: {video_moves}",
+            f"字幕: {subtitle_moves}",
+        ]
+    )
+    if notifier is not None and poster_url:
+        try:
+            notifier.send_photo(
+                poster_url,
+                caption=_truncate_telegram_caption(message),
+                parse_mode="MarkdownV2",
+            )
+            return
+        except TelegramError as exc:
+            logger.warning("telegram: photo_notify_failed error=%s", exc)
+    _notify_telegram(notifier, message, parse_mode="MarkdownV2")
+
+
+def _notify_monitor_failure(
+    notifier: TelegramNotifier | None,
+    *,
+    series_dir: Path,
+    stage: str,
+    exc: Exception,
+) -> None:
+    stage_text = {
+        "plan": "生成计划",
+        "apply": "执行重命名",
+        "apply_planned": "恢复并执行待处理计划",
+    }.get(stage, stage)
+    dir_text = _escape_markdown_v2(series_dir.name)
+    stage_text_safe = _escape_markdown_v2(stage_text)
+    time_text = _escape_markdown_v2(datetime.now().isoformat(timespec="seconds"))
+    error_text = _escape_markdown_v2(f"{type(exc).__name__}: {exc}")
+    message = "\n".join(
+        [
+            "Aninamer 归档失败",
+            f"目录: {dir_text}",
+            f"阶段: {stage_text_safe}",
+            f"时间: {time_text}",
+            f"错误: {error_text}",
+        ]
+    )
+    _notify_telegram(notifier, message, parse_mode="MarkdownV2")
+
+
+def _tmdb_poster_url_from_details(details: TvDetails) -> str | None:
+    poster_path = (details.poster_path or "").strip()
+    if not poster_path:
+        return None
+    if not poster_path.startswith("/"):
+        poster_path = f"/{poster_path}"
+    return f"https://image.tmdb.org/t/p/w500{poster_path}"
+
+
+def _resolve_tmdb_poster_url(tmdb: TMDBClient, tmdb_id: int) -> str | None:
+    try:
+        details = tmdb.get_tv_details(tmdb_id, language="zh-CN")
+    except Exception as exc:
+        logger.warning(
+            "telegram: poster_lookup_failed tmdb_id=%s error=%s",
+            tmdb_id,
+            exc,
+        )
+        return None
+    return _tmdb_poster_url_from_details(details)
 
 
 def _is_within(child: Path, root: Path) -> bool:
@@ -702,7 +858,7 @@ def _finalize_series_dir_after_apply(
     plan: RenamePlan,
     *,
     before_files: set[str],
-) -> bool:
+) -> MonitorFinalizeResult:
     after_files = _snapshot_series_files(series_dir)
     expected_after = before_files - _plan_source_rel_paths(plan, series_dir)
     if after_files != expected_after:
@@ -712,11 +868,11 @@ def _finalize_series_dir_after_apply(
             len(expected_after),
             len(after_files),
         )
-        return False
+        return MonitorFinalizeResult(status="skipped")
 
     if _prune_empty_tree(series_dir):
         logger.info("monitor: source_deleted series_dir=%s", series_dir)
-        return True
+        return MonitorFinalizeResult(status="deleted")
 
     archive_path = _archive_series_dir(series_dir)
     logger.info(
@@ -724,7 +880,7 @@ def _finalize_series_dir_after_apply(
         series_dir,
         archive_path,
     )
-    return True
+    return MonitorFinalizeResult(status="archived", archive_path=archive_path)
 
 
 def _apply_monitor_plan(
@@ -732,7 +888,7 @@ def _apply_monitor_plan(
     *,
     rollback_file: Path,
     two_stage: bool,
-) -> int:
+) -> MonitorApplyResult:
     before_files = _snapshot_series_files(plan.series_dir)
     applied_count = _do_apply_from_plan(
         plan,
@@ -740,12 +896,12 @@ def _apply_monitor_plan(
         dry_run=False,
         two_stage=two_stage,
     )
-    _finalize_series_dir_after_apply(
+    finalize = _finalize_series_dir_after_apply(
         plan.series_dir,
         plan,
         before_files=before_files,
     )
-    return applied_count
+    return MonitorApplyResult(applied_count=applied_count, finalize=finalize)
 
 
 def _build_plan_from_args(
@@ -984,6 +1140,7 @@ def _run_monitor(
     llm_for_tmdb_id_factory: Callable[[], LLMClient] | None,
     llm_for_mapping_factory: Callable[[], LLMClient] | None,
 ) -> int:
+    notifier = _telegram_notifier_from_args(args)
     monitor_targets = _monitor_targets_from_args(args)
     output_roots = tuple(target.output_root for target in monitor_targets)
     log_path = Path(args.log_path)
@@ -1027,6 +1184,7 @@ def _run_monitor(
             tmdb_client_factory=tmdb_client_factory,
             llm_for_tmdb_id_factory=llm_for_tmdb_id_factory,
             llm_for_mapping_factory=llm_for_mapping_factory,
+            notifier=notifier,
             shutdown_check=lambda: shutdown_requested,
         )
     finally:
@@ -1043,9 +1201,17 @@ def _monitor_loop(
     tmdb_client_factory: Callable[[], TMDBClient] | None,
     llm_for_tmdb_id_factory: Callable[[], LLMClient] | None,
     llm_for_mapping_factory: Callable[[], LLMClient] | None,
+    notifier: TelegramNotifier | None,
     shutdown_check: Callable[[], bool],
 ) -> int:
     tmdb = tmdb_client_factory() if tmdb_client_factory else _tmdb_client_from_env()
+    poster_url_cache: dict[int, str | None] = {}
+
+    def _cached_poster_url(tmdb_id: int) -> str | None:
+        if tmdb_id not in poster_url_cache:
+            poster_url_cache[tmdb_id] = _resolve_tmdb_poster_url(tmdb, tmdb_id)
+        return poster_url_cache[tmdb_id]
+
     llm_for_id_factory: Callable[[], LLMClient] | None = None
     if args.tmdb is None:
         llm_for_id_factory = (
@@ -1128,7 +1294,7 @@ def _monitor_loop(
                 )
                 try:
                     plan = read_rename_plan_json(plan_path)
-                    applied_count = _apply_monitor_plan(
+                    apply_result = _apply_monitor_plan(
                         plan,
                         rollback_file=rollback_path,
                         two_stage=args.two_stage,
@@ -1136,7 +1302,12 @@ def _monitor_loop(
                     logger.info(
                         "monitor: applied series_dir=%s applied_count=%s",
                         series_dir,
-                        applied_count,
+                        apply_result.applied_count,
+                    )
+                    _notify_monitor_success(
+                        notifier,
+                        plan=plan,
+                        poster_url=_cached_poster_url(plan.tmdb_id),
                     )
                     state.planned.discard(resolved)
                     _write_monitor_state(state_file, state)
@@ -1145,6 +1316,12 @@ def _monitor_loop(
                         "monitor: failed series_dir=%s error=%s",
                         series_dir,
                         exc,
+                    )
+                    _notify_monitor_failure(
+                        notifier,
+                        series_dir=series_dir,
+                        stage="apply_planned",
+                        exc=exc,
                     )
                     state.planned.discard(resolved)
                     state.failed.add(resolved)
@@ -1189,6 +1366,7 @@ def _monitor_loop(
                 max_output_tokens=args.max_output_tokens,
                 allow_existing_dest=args.allow_existing_dest,
             )
+            stage = "plan"
             try:
                 plan, _ = _build_plan_from_args(
                     plan_args,
@@ -1210,7 +1388,8 @@ def _monitor_loop(
                 _write_monitor_state(state_file, state)
 
                 if args.apply:
-                    applied_count = _apply_monitor_plan(
+                    stage = "apply"
+                    apply_result = _apply_monitor_plan(
                         plan,
                         rollback_file=rollback_path,
                         two_stage=args.two_stage,
@@ -1218,7 +1397,12 @@ def _monitor_loop(
                     logger.info(
                         "monitor: applied series_dir=%s applied_count=%s",
                         series_dir,
-                        applied_count,
+                        apply_result.applied_count,
+                    )
+                    _notify_monitor_success(
+                        notifier,
+                        plan=plan,
+                        poster_url=_cached_poster_url(plan.tmdb_id),
                     )
                     state.planned.discard(resolved)
                     _write_monitor_state(state_file, state)
@@ -1227,6 +1411,12 @@ def _monitor_loop(
                     "monitor: failed series_dir=%s error=%s",
                     series_dir,
                     exc,
+                )
+                _notify_monitor_failure(
+                    notifier,
+                    series_dir=series_dir,
+                    stage=stage,
+                    exc=exc,
                 )
                 # Remove from pending or planned (depending on where failure occurred)
                 state.pending.discard(resolved)
@@ -1324,6 +1514,7 @@ def main(
         LLMOutputError,
         PlanValidationError,
         ApplyError,
+        TelegramError,
     ) as exc:
         logger.exception("command failed: %s", exc)
         return 1
