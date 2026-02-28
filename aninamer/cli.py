@@ -52,6 +52,8 @@ from aninamer.tmdb_resolve import (
 
 logger = logging.getLogger(__name__)
 MONITOR_ARCHIVE_DIR = "archive"
+MONITOR_FAIL_DIR = "fail"
+MONITOR_EXCLUDED_DIR_NAMES = frozenset({MONITOR_ARCHIVE_DIR, MONITOR_FAIL_DIR})
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -691,14 +693,12 @@ def _ensure_not_within(
 class MonitorState:
     pending: set[str]
     planned: set[str]
-    failed: set[str]
 
 
 def _empty_monitor_state() -> MonitorState:
     return MonitorState(
         pending=set(),
         planned=set(),
-        failed=set(),
     )
 
 
@@ -717,16 +717,14 @@ def _load_monitor_state(path: Path) -> MonitorState:
         if not isinstance(data, dict):
             raise ValueError("state must be an object")
         version = data.get("version")
-        if version == 4:
+        if version == 5:
             pending = _load_state_list(data, "pending")
             planned = _load_state_list(data, "planned")
-            failed = _load_state_list(data, "failed")
             return MonitorState(
                 pending=pending,
                 planned=planned,
-                failed=failed,
             )
-        raise ValueError("state version must be 4")
+        raise ValueError("state version must be 5")
     except Exception as exc:
         logger.warning(
             "monitor: state_read_failed path=%s error=%s",
@@ -738,10 +736,9 @@ def _load_monitor_state(path: Path) -> MonitorState:
 
 def _write_monitor_state(path: Path, state: MonitorState) -> None:
     payload = {
-        "version": 4,
+        "version": 5,
         "pending": sorted(state.pending),
         "planned": sorted(state.planned),
-        "failed": sorted(state.failed),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -788,7 +785,7 @@ def _discover_series_dirs(input_root: Path) -> list[Path]:
         for path in entries
         if path.is_dir()
         and not path.name.startswith(".")
-        and path.name.casefold() != MONITOR_ARCHIVE_DIR
+        and path.name.casefold() not in MONITOR_EXCLUDED_DIR_NAMES
     ]
     series_dirs.sort(key=lambda path: path.name.casefold())
     return series_dirs
@@ -833,24 +830,44 @@ def _prune_empty_tree(path: Path) -> bool:
     return not path.exists()
 
 
-def _next_archive_path(archive_root: Path, series_name: str) -> Path:
-    candidate = archive_root / series_name
+def _next_monitor_bucket_path(bucket_root: Path, series_name: str) -> Path:
+    candidate = bucket_root / series_name
     if not candidate.exists():
         return candidate
     suffix = 1
     while True:
-        candidate = archive_root / f"{series_name}.{suffix}"
+        candidate = bucket_root / f"{series_name}.{suffix}"
         if not candidate.exists():
             return candidate
         suffix += 1
 
 
+def _move_series_dir_to_monitor_bucket(series_dir: Path, bucket_name: str) -> Path:
+    bucket_root = series_dir.parent / bucket_name
+    bucket_root.mkdir(parents=True, exist_ok=True)
+    bucket_path = _next_monitor_bucket_path(bucket_root, series_dir.name)
+    series_dir.rename(bucket_path)
+    return bucket_path
+
+
 def _archive_series_dir(series_dir: Path) -> Path:
-    archive_root = series_dir.parent / MONITOR_ARCHIVE_DIR
-    archive_root.mkdir(parents=True, exist_ok=True)
-    archive_path = _next_archive_path(archive_root, series_dir.name)
-    series_dir.rename(archive_path)
-    return archive_path
+    return _move_series_dir_to_monitor_bucket(series_dir, MONITOR_ARCHIVE_DIR)
+
+
+def _move_series_dir_to_fail(series_dir: Path) -> Path:
+    return _move_series_dir_to_monitor_bucket(series_dir, MONITOR_FAIL_DIR)
+
+
+def _move_failed_series_dir(series_dir: Path) -> None:
+    if not series_dir.exists() or not series_dir.is_dir():
+        logger.info("monitor: source_missing_skip_fail_move series_dir=%s", series_dir)
+        return
+    fail_path = _move_series_dir_to_fail(series_dir)
+    logger.info(
+        "monitor: source_failed_moved series_dir=%s fail_path=%s",
+        series_dir,
+        fail_path,
+    )
 
 
 def _finalize_series_dir_after_apply(
@@ -1251,26 +1268,11 @@ def _monitor_loop(
         )
         current_dirs = set(resolved_map.keys())
 
-        # Clean up failed entries from pending/planned
-        failed_cleanup_dirty = False
-        if state.failed:
-            if state.pending.intersection(state.failed):
-                state.pending.difference_update(state.failed)
-                failed_cleanup_dirty = True
-            if state.planned.intersection(state.failed):
-                state.planned.difference_update(state.failed)
-                failed_cleanup_dirty = True
-        if failed_cleanup_dirty:
-            _write_monitor_state(state_file, state)
-
         # Discover new directories and add to pending
         new_pending_dirty = False
         for resolved, (series_dir, _output_root) in sorted(
             resolved_map.items(), key=lambda item: item[0]
         ):
-            if resolved in state.failed:
-                logger.debug("monitor: skip_failed series_dir=%s", series_dir)
-                continue
             if resolved in state.planned or resolved in state.pending:
                 continue
             state.pending.add(resolved)
@@ -1281,10 +1283,6 @@ def _monitor_loop(
 
         if args.apply:
             for resolved in sorted(state.planned):
-                if resolved in state.failed:
-                    state.planned.discard(resolved)
-                    _write_monitor_state(state_file, state)
-                    continue
                 mapped = resolved_map.get(resolved)
                 series_dir = mapped[0] if mapped is not None else Path(resolved)
                 plan_path, rollback_path = _default_plan_paths(log_path, series_dir)
@@ -1324,15 +1322,18 @@ def _monitor_loop(
                         exc=exc,
                     )
                     state.planned.discard(resolved)
-                    state.failed.add(resolved)
                     _write_monitor_state(state_file, state)
+                    try:
+                        _move_failed_series_dir(series_dir)
+                    except Exception as move_exc:
+                        logger.warning(
+                            "monitor: failed_move_to_fail series_dir=%s error=%s",
+                            series_dir,
+                            move_exc,
+                        )
                     continue
 
         for resolved in sorted(state.pending):
-            if resolved in state.failed:
-                state.pending.discard(resolved)
-                _write_monitor_state(state_file, state)
-                continue
             mapped = resolved_map.get(resolved)
             if mapped is None:
                 continue
@@ -1421,8 +1422,15 @@ def _monitor_loop(
                 # Remove from pending or planned (depending on where failure occurred)
                 state.pending.discard(resolved)
                 state.planned.discard(resolved)
-                state.failed.add(resolved)
                 _write_monitor_state(state_file, state)
+                try:
+                    _move_failed_series_dir(series_dir)
+                except Exception as move_exc:
+                    logger.warning(
+                        "monitor: failed_move_to_fail series_dir=%s error=%s",
+                        series_dir,
+                        move_exc,
+                    )
                 continue
 
         if args.once:

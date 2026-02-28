@@ -147,12 +147,12 @@ def test_cli_monitor_once_plans_without_apply(tmp_path: Path) -> None:
     state_file = log_path / "monitor_state.json"
     assert state_file.exists()
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 4
+    assert data["version"] == 5
     pending = set(data["pending"])
     assert str(series_a.resolve(strict=False)) in pending
     assert str(series_b.resolve(strict=False)) in pending
     assert data["planned"] == []
-    assert data["failed"] == []
+    assert "failed" not in data
     assert mapping_llm.calls == 0
 
     assert (series_a / "ep1.mkv").exists()
@@ -226,10 +226,10 @@ def test_cli_monitor_once_pending_when_not_settled(tmp_path: Path) -> None:
 
     state_file = log_path / "monitor_state.json"
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 4
+    assert data["version"] == 5
     assert str(series_dir.resolve(strict=False)) in data["pending"]
     assert data["planned"] == []
-    assert data["failed"] == []
+    assert "failed" not in data
     assert mapping_llm.calls == 0
 
     assert (series_dir / "ep1.mkv").exists()
@@ -286,10 +286,10 @@ def test_cli_monitor_apply_marks_state_and_moves(tmp_path: Path) -> None:
 
     state_file = log_path / "monitor_state.json"
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 4
+    assert data["version"] == 5
     assert data["pending"] == []
     assert data["planned"] == []
-    assert data["failed"] == []
+    assert "failed" not in data
 
     series_folder = out_root / "Show (2020) {tmdb-123}"
     dst_video = series_folder / "S01" / "Show S01E01.mkv"
@@ -634,11 +634,10 @@ def test_cli_monitor_skips_finalize_if_new_files_appear_after_apply(
 
     state_file = log_path / "monitor_state.json"
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    resolved = str(series_dir.resolve(strict=False))
-    assert resolved not in set(data["failed"])
+    assert "failed" not in data
 
 
-def test_cli_monitor_marks_failed_and_skips_future_runs(tmp_path: Path) -> None:
+def test_cli_monitor_moves_failed_dir_to_fail_and_skips_future_runs(tmp_path: Path) -> None:
     input_root = tmp_path / "Input"
     series_dir = input_root / "SeriesFail"
     _write(series_dir / "ep1.mkv", b"video")
@@ -685,11 +684,16 @@ def test_cli_monitor_marks_failed_and_skips_future_runs(tmp_path: Path) -> None:
 
     state_file = log_path / "monitor_state.json"
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 4
+    assert data["version"] == 5
     resolved = str(series_dir.resolve(strict=False))
-    assert resolved in data["failed"]
+    assert "failed" not in data
     assert resolved not in data["pending"]
     assert resolved not in data["planned"]
+    failed_dir = input_root / "fail" / "SeriesFail"
+    assert failed_dir.exists()
+    assert (failed_dir / "ep1.mkv").exists()
+    assert (failed_dir / "ep1.ass").exists()
+    assert not series_dir.exists()
     calls_after_first = mapping_llm.calls
     assert calls_after_first > 0
 
@@ -700,6 +704,51 @@ def test_cli_monitor_marks_failed_and_skips_future_runs(tmp_path: Path) -> None:
     )
     assert rc2 == 0
     assert mapping_llm.calls == calls_after_first
+
+
+def test_cli_monitor_failure_move_to_fail_appends_suffix(tmp_path: Path) -> None:
+    input_root = tmp_path / "Input"
+    series_dir = input_root / "SeriesFail"
+    _write(series_dir / "ep1.mkv", b"video")
+    _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
+    _write(input_root / "fail" / "SeriesFail" / "old.txt", b"old")
+
+    out_root = tmp_path / "Out"
+    log_path = tmp_path / "logs"
+
+    details = TvDetails(
+        id=123,
+        name="Show",
+        original_name=None,
+        first_air_date="2020-01-01",
+        seasons=[SeasonSummary(season_number=1, episode_count=1)],
+    )
+    tmdb = FakeTMDB(details=details)
+    mapping_llm = FakeLLM(reply="not json")
+
+    rc = main(
+        [
+            "--log-path",
+            str(log_path),
+            "monitor",
+            "--watch",
+            str(input_root),
+            str(out_root),
+            "--once",
+            "--tmdb",
+            "123",
+            "--settle-seconds",
+            "0",
+        ],
+        tmdb_client_factory=lambda: tmdb,
+        llm_for_mapping_factory=lambda: mapping_llm,
+    )
+
+    assert rc == 0
+    assert (input_root / "fail" / "SeriesFail" / "old.txt").exists()
+    assert (input_root / "fail" / "SeriesFail.1" / "ep1.mkv").exists()
+    assert (input_root / "fail" / "SeriesFail.1" / "ep1.ass").exists()
+    assert not series_dir.exists()
 
 
 def test_cli_monitor_failure_sends_telegram_error(tmp_path: Path, monkeypatch) -> None:

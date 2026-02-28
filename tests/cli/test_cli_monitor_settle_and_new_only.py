@@ -170,8 +170,8 @@ def test_monitor_first_run_processes_existing_by_default(tmp_path: Path) -> None
     state_file = log_path / "monitor_state.json"
     assert state_file.exists()
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 4
-    assert data["failed"] == []
+    assert data["version"] == 5
+    assert "failed" not in data
     assert data["pending"] == []
     assert data["planned"] == []
 
@@ -246,7 +246,7 @@ def test_monitor_second_run_processes_another_dir(tmp_path: Path) -> None:
     data = json.loads(state_file.read_text(encoding="utf-8"))
     assert data["pending"] == []
     assert data["planned"] == []
-    assert data["failed"] == []
+    assert "failed" not in data
 
 
 def test_monitor_settle_seconds_defers_processing_until_stable(tmp_path: Path) -> None:

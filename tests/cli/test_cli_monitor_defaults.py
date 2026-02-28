@@ -224,10 +224,10 @@ def test_cli_monitor_once_apply_processes_each_subdir_and_writes_state(
     # State file written and includes both series dirs
     assert state_file.exists()
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 4
+    assert data["version"] == 5
     assert data["pending"] == []
     assert data["planned"] == []
-    assert data["failed"] == []
+    assert "failed" not in data
 
     # Mapping LLM called twice (once per show)
     assert llm_map.calls == 2

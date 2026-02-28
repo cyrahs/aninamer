@@ -125,10 +125,10 @@ def test_cli_monitor_multi_watch_pairs_apply_and_archive(tmp_path: Path) -> None
 
     state_file = log_path / "monitor_state.json"
     data = json.loads(state_file.read_text(encoding="utf-8"))
-    assert data["version"] == 4
+    assert data["version"] == 5
     assert data["pending"] == []
     assert data["planned"] == []
-    assert data["failed"] == []
+    assert "failed" not in data
 
 
 def test_cli_monitor_rejects_same_input_root_with_different_outputs(

@@ -81,14 +81,15 @@ The `monitor` command watches an input directory for new series folders and auto
 
 ### How it works
 
-1. It periodically scans source roots for series directories (excluding `archive/` by default).
+1. It periodically scans source roots for series directories (excluding `archive/` and `fail/` by default).
 2. Discovered directories enter a **pending** state and must remain unchanged for a settle period (default 30 seconds) to ensure downloads are complete.
 3. Once settled, the directory is planned and optionally applied.
 4. After a successful apply:
    - empty source directories are deleted
    - non-empty source directories are moved to `archive/` under the same source root (with suffixes on name collisions)
-5. If new files appear during processing, monitor skips directory cleanup/archive and leaves the directory for a later run.
-6. State is persisted to a JSON file, surviving restarts.
+5. If processing fails, the source directory is moved to `fail/` under the same source root (with suffixes on name collisions).
+6. If new files appear during processing, monitor skips directory cleanup/archive and leaves the directory for a later run.
+7. State is persisted to a JSON file, surviving restarts.
 
 ### Monitor options
 
@@ -180,6 +181,5 @@ docker stop aninamer-monitor
 The state file (`monitor_state.json`) tracks:
 - **pending**: directories waiting to settle
 - **planned**: directories with generated plans (awaiting apply)
-- **failed**: directories that encountered errors
 
-To reprocess a failed directory, remove it from the `failed` set in the state file and restart the monitor.
+To reprocess a failed directory, move it from `fail/` back to the source root and restart monitor.
