@@ -52,12 +52,14 @@ def send_notification_webhook(
     config: NotificationConfig,
     *,
     markdown: str,
+    image_url: str,
     disable_web_page_preview: bool,
     disable_notification: bool,
     transport: WebhookTransport | None = None,
 ) -> WebhookResponse:
     payload = {
         "markdown": markdown,
+        "image_url": image_url,
         "disable_web_page_preview": disable_web_page_preview,
         "disable_notification": disable_notification,
     }

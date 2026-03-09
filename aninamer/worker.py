@@ -35,7 +35,7 @@ from aninamer.pipeline import (
 )
 from aninamer.plan import RenamePlan
 from aninamer.store import JobRecord, JobRequestRecord, NotificationRecord, RuntimeStore
-from aninamer.tmdb_client import TMDBClient
+from aninamer.tmdb_client import TMDBClient, build_poster_image_url
 from aninamer.webhook_delivery import (
     WebhookTransport,
     response_error_text,
@@ -361,6 +361,7 @@ class AninamerWorker:
                 response = send_notification_webhook(
                     config,
                     markdown=notification.markdown,
+                    image_url=notification.image_url,
                     disable_web_page_preview=notification.disable_web_page_preview,
                     disable_notification=notification.disable_notification,
                     transport=self._webhook_transport,
@@ -479,6 +480,7 @@ class AninamerWorker:
             if job_request_id is not None
             else None
         )
+        image_url = self._notification_image_url(job)
         return self._store.create_notification(
             event_kind=event_kind,
             severity=severity,
@@ -492,6 +494,7 @@ class AninamerWorker:
                 job_request=job_request,
                 payload=payload or {},
             ),
+            image_url=image_url,
             job_id=job_id,
             job_request_id=job_request_id,
             payload=payload,
@@ -499,6 +502,23 @@ class AninamerWorker:
                 "pending" if self._config.notifications is not None else "disabled"
             ),
         )
+
+    def _notification_image_url(self, job: JobRecord | None) -> str:
+        if job is None or job.tmdb_id is None:
+            return ""
+        try:
+            _series_name, details = self._tmdb_client_factory().resolve_series_title(
+                job.tmdb_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "worker: notification_image_lookup_failed job_id=%s tmdb_id=%s error=%s",
+                job.id,
+                job.tmdb_id,
+                exc,
+            )
+            return ""
+        return build_poster_image_url(details.poster_path)
 
 
 def _count_moves(plan: RenamePlan) -> tuple[int, int]:

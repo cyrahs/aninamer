@@ -117,6 +117,21 @@ CHINESE_COUNTRY_FALLBACK_ORDER: tuple[str, ...] = (
     "HK",  # Traditional Chinese - Hong Kong
     "TW",  # Traditional Chinese - Taiwan
 )
+TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p"
+TMDB_POSTER_SIZE = "original"
+
+
+def build_poster_image_url(poster_path: str | None) -> str:
+    if not poster_path:
+        return ""
+    normalized_path = poster_path.strip()
+    if not normalized_path:
+        return ""
+    if normalized_path.startswith(("http://", "https://")):
+        return normalized_path
+    if not normalized_path.startswith("/"):
+        normalized_path = f"/{normalized_path}"
+    return f"{TMDB_IMAGE_BASE_URL}/{TMDB_POSTER_SIZE}{normalized_path}"
 
 # Country codes for Chinese alternative titles (aliases)
 CHINESE_ALIAS_COUNTRY_CODES: tuple[str, ...] = (

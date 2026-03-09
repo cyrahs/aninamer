@@ -114,6 +114,7 @@ class NotificationRecord:
     job_request_id: int | None
     payload: dict[str, Any]
     markdown: str
+    image_url: str
     disable_web_page_preview: bool
     disable_notification: bool
     delivery_status: NotificationDeliveryStatus
@@ -241,6 +242,7 @@ class RuntimeStore:
                         job_request_id BIGINT NULL REFERENCES job_requests(id) ON DELETE SET NULL,
                         payload JSONB NOT NULL DEFAULT '{}'::jsonb,
                         markdown TEXT NOT NULL DEFAULT '',
+                        image_url TEXT NOT NULL DEFAULT '',
                         disable_web_page_preview BOOLEAN NOT NULL DEFAULT TRUE,
                         disable_notification BOOLEAN NOT NULL DEFAULT FALSE,
                         delivery_status TEXT NOT NULL DEFAULT 'pending'
@@ -266,6 +268,12 @@ class RuntimeStore:
                     """
                     ALTER TABLE notifications
                     ADD COLUMN IF NOT EXISTS markdown TEXT NOT NULL DEFAULT ''
+                    """
+                )
+                cur.execute(
+                    """
+                    ALTER TABLE notifications
+                    ADD COLUMN IF NOT EXISTS image_url TEXT NOT NULL DEFAULT ''
                     """
                 )
                 cur.execute(
@@ -634,6 +642,7 @@ class RuntimeStore:
         title: str,
         message: str,
         markdown: str,
+        image_url: str = "",
         job_id: int | None = None,
         job_request_id: int | None = None,
         payload: dict[str, Any] | None = None,
@@ -656,6 +665,7 @@ class RuntimeStore:
                         job_request_id,
                         payload,
                         markdown,
+                        image_url,
                         disable_web_page_preview,
                         disable_notification,
                         delivery_status,
@@ -665,7 +675,7 @@ class RuntimeStore:
                         delivered_at,
                         last_error
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, NULL, NULL, NULL)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, NULL, NULL, NULL)
                     RETURNING *
                     """,
                     (
@@ -677,6 +687,7 @@ class RuntimeStore:
                         job_request_id,
                         Jsonb(resolved_payload),
                         markdown,
+                        image_url,
                         disable_web_page_preview,
                         disable_notification,
                         delivery_status,
@@ -898,6 +909,7 @@ class RuntimeStore:
             job_request_id=row["job_request_id"],
             payload=payload,
             markdown=row["markdown"],
+            image_url=row["image_url"],
             disable_web_page_preview=bool(row["disable_web_page_preview"]),
             disable_notification=bool(row["disable_notification"]),
             delivery_status=row["delivery_status"],

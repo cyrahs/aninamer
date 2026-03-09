@@ -40,6 +40,7 @@ def test_send_notification_webhook_uses_exact_contract() -> None:
     response = send_notification_webhook(
         config,
         markdown="# 处理完成",
+        image_url="https://image.tmdb.org/t/p/original/poster.jpg",
         disable_web_page_preview=True,
         disable_notification=False,
         transport=transport,
@@ -54,6 +55,7 @@ def test_send_notification_webhook_uses_exact_contract() -> None:
     assert transport.last_timeout == 12.0
     assert json.loads((transport.last_body or b"{}").decode("utf-8")) == {
         "markdown": "# 处理完成",
+        "image_url": "https://image.tmdb.org/t/p/original/poster.jpg",
         "disable_web_page_preview": True,
         "disable_notification": False,
     }

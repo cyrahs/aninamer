@@ -22,6 +22,7 @@ class FakeTMDBClient:
             original_name=None,
             first_air_date="2020-01-01",
             seasons=[SeasonSummary(season_number=1, episode_count=1)],
+            poster_path="/poster.jpg",
         )
         return details.name, details
 
@@ -355,6 +356,7 @@ def test_worker_delivers_webhook_notifications_when_enabled(
     body = json.loads((transport.last_body or b"{}").decode("utf-8"))
     assert body == {
         "markdown": delivered.markdown,
+        "image_url": "",
         "disable_web_page_preview": True,
         "disable_notification": False,
     }
@@ -385,8 +387,11 @@ def test_worker_retries_failed_webhook_delivery(
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_plan_failed"]
     retried = notifications[0]
+    assert retried.image_url == "https://image.tmdb.org/t/p/original/poster.jpg"
     assert retried.delivery_status == "retry"
     assert retried.attempt_count == 1
     assert retried.last_error is not None
     assert "500" in retried.last_error
     assert retried.next_attempt_at is not None
+    body = json.loads((transport.last_body or b"{}").decode("utf-8"))
+    assert body["image_url"] == "https://image.tmdb.org/t/p/original/poster.jpg"
