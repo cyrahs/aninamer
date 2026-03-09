@@ -7,7 +7,6 @@ import re
 
 import pytest
 
-from aninamer.cli import _search_tmdb_candidates
 from aninamer.episode_mapping import (
     EpisodeMapItem,
     EpisodeMappingResult,
@@ -17,6 +16,7 @@ from aninamer.openai_llm_client import (
     openai_llm_for_tmdb_id_from_env,
     openai_llm_from_env,
 )
+from aninamer.pipeline import search_tmdb_candidates
 from aninamer.plan import RenamePlan, build_rename_plan
 from aninamer.plan_io import read_rename_plan_json
 from aninamer.scanner import SUBTITLE_EXTS, VIDEO_EXTS, scan_series_dir
@@ -262,7 +262,7 @@ def test_real_case_end_to_end_with_real_llm(
     scan = scan_series_dir(series_dir)
 
     tmdb = TMDBClient(api_key=os.environ["TMDB_API_KEY"].strip(), timeout=30.0)
-    candidates = _search_tmdb_candidates(
+    candidates = search_tmdb_candidates(
         tmdb,
         series_dir.name,
         llm_title_factory=openai_llm_for_tmdb_id_from_env,

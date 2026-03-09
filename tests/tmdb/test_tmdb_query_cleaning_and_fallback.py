@@ -4,10 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
+import pytest
 
-from aninamer.cli import main
 from aninamer.llm_client import ChatMessage
 from aninamer.name_clean import build_tmdb_query_variants, clean_tmdb_query
+from aninamer.pipeline import PlanBuildOptions, build_rename_plan_for_series, search_tmdb_candidates
 from aninamer.tmdb_client import (
     SeasonDetails,
     SeasonSummary,
@@ -20,19 +21,12 @@ def test_clean_tmdb_query_removes_brackets_quality_and_season_markers() -> None:
     raw = "[DMG&SumiSora&VCB-Studio] Mahouka Koukou no Rettousei S3 [Ma10p_1080p]"
     cleaned = clean_tmdb_query(raw)
 
-    # Core title should remain
     assert "Mahouka" in cleaned
     assert "Rettousei" in cleaned
-
-    # Bracket content removed
     assert "DMG" not in cleaned
     assert "VCB" not in cleaned
-
-    # Quality tag removed
     assert "1080p" not in cleaned.lower()
     assert "ma10p" not in cleaned.lower()
-
-    # Season marker removed
     assert "S3" not in cleaned
     assert "s3" not in cleaned.lower()
 
@@ -41,19 +35,15 @@ def test_build_tmdb_query_variants_includes_cleaned_and_shortened() -> None:
     raw = "[X] Mahouka Koukou no Rettousei S3 [1080p]"
     variants = build_tmdb_query_variants(raw, max_variants=6)
 
-    assert variants, "should produce at least one variant"
-    # original (whitespace normalized) should be present
+    assert variants
     assert variants[0].strip() == raw.strip()
 
-    # cleaned should be present
     cleaned = clean_tmdb_query(raw)
     assert cleaned in variants
 
-    # shorter variants should exist (e.g., first 2 words)
     words = cleaned.split()
     if len(words) >= 4:
-        short2 = " ".join(words[:2])
-        assert short2 in variants
+        assert " ".join(words[:2]) in variants
 
 
 @dataclass
@@ -82,10 +72,8 @@ class FakeTMDBClientForCleaning:
         self, query: str, *, language: str = "zh-CN", page: int = 1
     ) -> list[TvSearchResult]:
         self.calls.append((query, language))
-        # Simulate the failure: noisy query returns 0
         if "[" in query or "]" in query:
             return []
-        # Simulate success only when cleaned core title is used
         if query.strip() == "Mahouka Koukou no Rettousei":
             return [
                 TvSearchResult(
@@ -179,92 +167,39 @@ def _write(p: Path, data: bytes) -> None:
     p.write_bytes(data)
 
 
-def test_cli_plan_falls_back_to_cleaned_query(tmp_path: Path) -> None:
-    # The directory name is noisy and will fail unless cleaning is used.
-    series_dir = (
-        tmp_path
-        / "[DMG&SumiSora&VCB-Studio] Mahouka Koukou no Rettousei S3 [Ma10p_1080p]"
-    )
-    out_root = tmp_path / "out"
-    plan_file = tmp_path / "rename_plan.json"
-    log_path = tmp_path / "logs"
-
-    _write(series_dir / "ep1.mkv", b"video")
-
+def test_search_tmdb_candidates_falls_back_to_cleaned_query() -> None:
     tmdb = FakeTMDBClientForCleaning()
 
-    # TMDB-id LLM selects the only candidate
-    llm_id = FakeLLM(reply='{"tmdb": 1000}')
-
-    # Mapping LLM: map video id 1 -> S01E01
-    llm_map = FakeLLM(reply='{"tmdb":1000,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[]}]}')
-
-    rc = main(
-        [
-            "--log-path",
-            str(log_path),
-            "plan",
-            str(series_dir),
-            "--out",
-            str(out_root),
-            "--plan-file",
-            str(plan_file),
-            "--max-candidates",
-            "5",
-        ],
-        tmdb_client_factory=lambda: tmdb,
-        llm_for_tmdb_id_factory=lambda: llm_id,
-        llm_for_mapping_factory=lambda: llm_map,
+    results = search_tmdb_candidates(
+        tmdb,
+        "[DMG&SumiSora&VCB-Studio] Mahouka Koukou no Rettousei S3 [Ma10p_1080p]",
     )
-    assert rc == 0
-    assert plan_file.exists()
 
-    # Ensure TMDB search was attempted with cleaned core query at least once
+    assert results[0].id == 1000
     assert ("Mahouka Koukou no Rettousei", "zh-CN") in tmdb.calls or (
         "Mahouka Koukou no Rettousei",
         "en-US",
     ) in tmdb.calls
 
 
-def test_cli_plan_falls_back_to_llm_title_when_search_empty(tmp_path: Path) -> None:
-    series_dir = tmp_path / "[X] Unfindable Title [1080p]"
-    out_root = tmp_path / "out"
-    plan_file = tmp_path / "rename_plan.json"
-    log_path = tmp_path / "logs"
-
-    _write(series_dir / "ep1.mkv", b"video")
-
+def test_search_tmdb_candidates_falls_back_to_llm_title_when_search_empty() -> None:
     tmdb = FakeTMDBClientForLLMTitle(target_query="LLM Title", tmdb_id=4242)
     llm_title = FakeLLM(reply='{"title": "LLM Title"}')
-    llm_map = FakeLLM(reply='{"tmdb":4242,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[]}]}')
 
-    rc = main(
-        [
-            "--log-path",
-            str(log_path),
-            "plan",
-            str(series_dir),
-            "--out",
-            str(out_root),
-            "--plan-file",
-            str(plan_file),
-        ],
-        tmdb_client_factory=lambda: tmdb,
-        llm_for_tmdb_id_factory=lambda: llm_title,
-        llm_for_mapping_factory=lambda: llm_map,
+    results = search_tmdb_candidates(
+        tmdb,
+        "[X] Unfindable Title [1080p]",
+        llm_title_factory=lambda: llm_title,
     )
-    assert rc == 0
-    assert plan_file.exists()
+
+    assert results[0].id == 4242
     assert ("LLM Title", "zh-CN") in tmdb.calls or ("LLM Title", "en-US") in tmdb.calls
     assert llm_title.calls == 1
 
 
-def test_cli_plan_error_includes_attempted_queries(tmp_path: Path) -> None:
+def test_build_rename_plan_error_includes_attempted_queries(tmp_path: Path) -> None:
     series_dir = tmp_path / "[X] TotallyUnfindableTitle [1080p]"
     out_root = tmp_path / "out"
-    plan_file = tmp_path / "rename_plan.json"
-    log_path = tmp_path / "logs"
-
     _write(series_dir / "ep1.mkv", b"video")
 
     class AlwaysEmptyTMDB(FakeTMDBClientForCleaning):
@@ -278,20 +213,12 @@ def test_cli_plan_error_includes_attempted_queries(tmp_path: Path) -> None:
     llm_id = FakeLLM(reply='{"tmdb": 1}')
     llm_map = FakeLLM(reply='{"tmdb":1,"eps":[]}')
 
-    rc = main(
-        [
-            "--log-path",
-            str(log_path),
-            "plan",
-            str(series_dir),
-            "--out",
-            str(out_root),
-            "--plan-file",
-            str(plan_file),
-        ],
-        tmdb_client_factory=lambda: tmdb,
-        llm_for_tmdb_id_factory=lambda: llm_id,
-        llm_for_mapping_factory=lambda: llm_map,
-    )
-    # Should fail gracefully with non-zero return code
-    assert rc != 0
+    with pytest.raises(ValueError, match="attempted queries"):
+        build_rename_plan_for_series(
+            series_dir=series_dir,
+            output_root=out_root,
+            options=PlanBuildOptions(),
+            tmdb_client_factory=lambda: tmdb,
+            llm_for_tmdb_id_factory=lambda: llm_id,
+            llm_for_mapping_factory=lambda: llm_map,
+        )

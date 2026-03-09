@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from aninamer.config import OpenAISettings
 from aninamer.errors import OpenAIError
 from aninamer.llm_client import ChatMessage
 from aninamer.openai_llm_client import (
@@ -12,7 +13,10 @@ from aninamer.openai_llm_client import (
     OpenAIConfig,
     OpenAIChatCompletionsLLM,
     load_openai_config_from_env,
+    openai_config_from_settings,
+    openai_llm_for_tmdb_id_from_settings,
     openai_llm_for_tmdb_id_from_env,
+    openai_llm_from_settings,
 )
 
 
@@ -90,6 +94,25 @@ def test_load_openai_config_from_env_with_reasoning_effort(
     assert config.reasoning_effort == "medium"
 
 
+def test_openai_config_from_settings_uses_reasoning_effort_override() -> None:
+    settings = OpenAISettings(
+        api_key="key",
+        model="gpt-test",
+        base_url="https://api.openai.com",
+        timeout=75.0,
+        reasoning_effort_chore="low",
+        reasoning_effort_mapping="medium",
+    )
+
+    config = openai_config_from_settings(settings, reasoning_effort="high")
+
+    assert config.api_key == "key"
+    assert config.model == "gpt-test"
+    assert config.base_url == "https://api.openai.com"
+    assert config.timeout == 75.0
+    assert config.reasoning_effort == "high"
+
+
 def test_openai_llm_for_tmdb_id_from_env_prefers_tmdb_reasoning_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -105,6 +128,38 @@ def test_openai_llm_for_tmdb_id_from_env_prefers_tmdb_reasoning_env(
     body = json.loads(transport.last_body.decode("utf-8"))
     assert body["max_tokens"] == 512
     assert body["reasoning_effort"] == "high"
+
+
+def test_openai_llm_from_settings_uses_mapping_reasoning_profile() -> None:
+    settings = OpenAISettings(
+        api_key="key",
+        model="gpt-test",
+        base_url="https://api.openai.com",
+        reasoning_effort_mapping="medium",
+    )
+    transport = CaptureTransport(response=_response_with_text("ok"))
+
+    client = openai_llm_from_settings(settings, transport=transport)
+    client.chat([ChatMessage(role="user", content="hello")], max_output_tokens=512)
+
+    body = json.loads(transport.last_body.decode("utf-8"))
+    assert body["reasoning_effort"] == "medium"
+
+
+def test_openai_llm_for_tmdb_id_from_settings_uses_chore_reasoning_profile() -> None:
+    settings = OpenAISettings(
+        api_key="key",
+        model="gpt-test",
+        base_url="https://api.openai.com",
+        reasoning_effort_chore="low",
+    )
+    transport = CaptureTransport(response=_response_with_text("ok"))
+
+    client = openai_llm_for_tmdb_id_from_settings(settings, transport=transport)
+    client.chat([ChatMessage(role="user", content="hello")], max_output_tokens=512)
+
+    body = json.loads(transport.last_body.decode("utf-8"))
+    assert body["reasoning_effort"] == "low"
 
 
 def test_openai_llm_for_tmdb_id_from_env_ignores_legacy_reasoning_env(

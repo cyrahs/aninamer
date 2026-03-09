@@ -1,0 +1,40 @@
+log_path = "./logs"
+
+[database]
+postgres_dsn = "postgresql://aninamer:replace-with-password@127.0.0.1:5432/aninamer"
+
+[tmdb]
+api_key = "replace-with-tmdb-api-key"
+timeout = 30
+
+[openai]
+api_key = "replace-with-openai-api-key"
+model = "gpt-5.2"
+base_url = "https://api.openai.com"
+timeout = 60
+reasoning_effort_chore = "low"
+# reasoning_effort_mapping = "medium"
+
+[notifications]
+base_url = "https://notify.example.test"
+bearer_token = "replace-with-webhook-bearer-token"
+timeout_seconds = 10
+
+[api]
+token = "replace-with-strong-random-token"
+bind = "127.0.0.1"
+port = 8091
+
+[worker]
+settle_seconds = 30
+scan_interval_seconds = 60
+auto_apply = false
+two_stage = false
+max_candidates = 5
+max_output_tokens = 2048
+allow_existing_dest = false
+
+[[watch_roots]]
+key = "downloads"
+input_root = "/input"
+output_root = "/output"

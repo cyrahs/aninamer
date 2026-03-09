@@ -8,6 +8,7 @@ from typing import Callable, Sequence
 from urllib import error as url_error
 from urllib import request
 
+from aninamer.config import OpenAISettings
 from aninamer.errors import OpenAIError
 from aninamer.llm_client import ChatMessage, LLMClient
 
@@ -90,6 +91,23 @@ def load_openai_config_from_env(
         base_url=base_url,
         reasoning_effort=reasoning_effort,
         timeout=timeout,
+    )
+
+
+def openai_config_from_settings(
+    settings: OpenAISettings,
+    *,
+    reasoning_effort: str | None,
+) -> OpenAIConfig:
+    cleaned_reasoning_effort = None
+    if reasoning_effort is not None and reasoning_effort.strip():
+        cleaned_reasoning_effort = reasoning_effort.strip()
+    return OpenAIConfig(
+        api_key=settings.api_key,
+        model=settings.model,
+        base_url=settings.base_url,
+        reasoning_effort=cleaned_reasoning_effort,
+        timeout=settings.timeout,
     )
 
 
@@ -251,11 +269,35 @@ def openai_llm_from_env(
     return OpenAIChatCompletionsLLM(config, transport=transport)
 
 
+def openai_llm_from_settings(
+    settings: OpenAISettings,
+    *,
+    transport: Transport | None = None,
+) -> OpenAIChatCompletionsLLM:
+    config = openai_config_from_settings(
+        settings,
+        reasoning_effort=settings.reasoning_effort_mapping,
+    )
+    return OpenAIChatCompletionsLLM(config, transport=transport)
+
+
 def openai_llm_for_tmdb_id_from_env(
     *, transport: Transport | None = None
 ) -> OpenAIChatCompletionsLLM:
     config = load_openai_config_from_env(
         reasoning_effort_env_vars=("OPENAI_REASONING_EFFORT_CHORE",),
         default_reasoning_effort="low",
+    )
+    return OpenAIChatCompletionsLLM(config, transport=transport)
+
+
+def openai_llm_for_tmdb_id_from_settings(
+    settings: OpenAISettings,
+    *,
+    transport: Transport | None = None,
+) -> OpenAIChatCompletionsLLM:
+    config = openai_config_from_settings(
+        settings,
+        reasoning_effort=settings.reasoning_effort_chore,
     )
     return OpenAIChatCompletionsLLM(config, transport=transport)

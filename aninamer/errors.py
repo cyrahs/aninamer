@@ -21,5 +21,5 @@ class ApplyError(AninamerError):
     pass
 
 
-class TelegramError(AninamerError):
+class NotificationDeliveryError(AninamerError):
     pass

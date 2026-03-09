@@ -3,10 +3,12 @@
 Tests are grouped by feature area to keep discovery predictable:
 
 - `tests/apply/`: `aninamer.apply`
-- `tests/cli/`: CLI commands and monitor behavior
+- `tests/api/`: FastAPI endpoint coverage
 - `tests/episode_mapping/`: mapping prompt/output parsing and orchestration
 - `tests/openai/`: OpenAI client and opt-in real-LLM integration smoke tests
 - `tests/plan/`: plan builder and plan I/O
+- `tests/service/`: worker orchestration
+- `tests/store/`: PostgreSQL runtime store behavior
 - `tests/tmdb/`: TMDB client, resolver, and query-cleaning behavior
 - `tests/utils/`: scanner/subtitles/name-clean/json helpers and logging instrumentation
 - `tests/real_cases/`: fixture-based real-case plan assertions

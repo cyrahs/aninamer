@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aninamer.service.launcher import run_service
+from .launcher import run_service
 
 
 if __name__ == "__main__":
