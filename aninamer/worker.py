@@ -45,6 +45,7 @@ from aninamer.webhook_delivery import (
 logger = logging.getLogger(__name__)
 MAX_NOTIFICATION_BATCH = 100
 MAX_NOTIFICATION_BACKOFF_SECONDS = 300
+_TELEGRAM_MARKDOWN_V2_SPECIALS = frozenset("\\_*[]()~`>#+-=|{}.!")
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,14 @@ class WorkerRuntimeSummary:
     settle_seconds: int
     scan_interval_seconds: int
     watch_root_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NotificationPresentation:
+    severity: str
+    title: str
+    message: str
+    markdown: str
 
 
 class AninamerWorker:
@@ -392,9 +401,6 @@ class AninamerWorker:
     def _notify_job_plan_failed(self, job: JobRecord) -> None:
         self._create_notification(
             event_kind="job_plan_failed",
-            severity="error",
-            title="计划生成失败",
-            message=f"{job.series_name} 计划生成失败",
             job_id=job.id,
             payload={
                 "error_stage": job.error_stage,
@@ -407,15 +413,8 @@ class AninamerWorker:
         job: JobRecord,
         finalize_status: str,
     ) -> None:
-        title, message, severity = _apply_success_notification_details(
-            job.series_name,
-            finalize_status,
-        )
         self._create_notification(
             event_kind="job_apply_succeeded",
-            severity=severity,
-            title=title,
-            message=message,
             job_id=job.id,
             payload={"finalize_status": finalize_status},
         )
@@ -423,9 +422,6 @@ class AninamerWorker:
     def _notify_job_apply_failed(self, job: JobRecord) -> None:
         self._create_notification(
             event_kind="job_apply_failed",
-            severity="error",
-            title="应用失败",
-            message=f"{job.series_name} 应用失败",
             job_id=job.id,
             payload={
                 "error_stage": job.error_stage,
@@ -436,9 +432,6 @@ class AninamerWorker:
     def _notify_job_request_rejected(self, request: JobRequestRecord) -> None:
         self._create_notification(
             event_kind="job_request_rejected",
-            severity="warning",
-            title="请求被拒绝",
-            message=f"{request.kind} 请求被拒绝",
             job_id=request.target_job_id,
             job_request_id=request.id,
             payload={
@@ -451,9 +444,6 @@ class AninamerWorker:
     def _notify_job_request_failed(self, request: JobRequestRecord) -> None:
         self._create_notification(
             event_kind="job_request_failed",
-            severity="error",
-            title="请求处理失败",
-            message=f"{request.kind} 请求处理失败",
             job_id=request.target_job_id,
             job_request_id=request.id,
             payload={
@@ -467,9 +457,6 @@ class AninamerWorker:
         self,
         *,
         event_kind: str,
-        severity: str,
-        title: str,
-        message: str,
         job_id: int | None = None,
         job_request_id: int | None = None,
         payload: dict[str, object] | None = None,
@@ -480,20 +467,20 @@ class AninamerWorker:
             if job_request_id is not None
             else None
         )
+        resolved_payload = payload or {}
+        presentation = _build_notification_presentation(
+            event_kind=event_kind,
+            job=job,
+            job_request=job_request,
+            payload=resolved_payload,
+        )
         image_url = self._notification_image_url(job)
         return self._store.create_notification(
             event_kind=event_kind,
-            severity=severity,
-            title=title,
-            message=message,
-            markdown=_render_notification_markdown(
-                event_kind=event_kind,
-                title=title,
-                message=message,
-                job=job,
-                job_request=job_request,
-                payload=payload or {},
-            ),
+            severity=presentation.severity,
+            title=presentation.title,
+            message=presentation.message,
+            markdown=presentation.markdown,
             image_url=image_url,
             job_id=job_id,
             job_request_id=job_request_id,
@@ -537,45 +524,92 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _apply_success_notification_details(
-    series_name: str,
-    finalize_status: str,
-) -> tuple[str, str, str]:
-    if finalize_status == "archived":
-        return "归档完成", f"{series_name} 已完成并归档", "success"
-    if finalize_status == "deleted":
-        return "处理完成", f"{series_name} 已处理完成", "success"
-    return "处理完成，未归档", f"{series_name} 已处理完成，但跳过归档", "warning"
+def _build_notification_presentation(
+    *,
+    event_kind: str,
+    job: JobRecord | None,
+    job_request: JobRequestRecord | None,
+    payload: dict[str, object],
+) -> NotificationPresentation:
+    del job_request
+    subject = _notification_subject(job)
+
+    if event_kind == "job_apply_succeeded":
+        finalize_status = payload.get("finalize_status")
+        if finalize_status == "archived":
+            title = "归档成功"
+            message = "已归档完成"
+            severity = "success"
+        elif finalize_status == "deleted":
+            title = "处理完成"
+            message = "已完成处理，源目录已清理"
+            severity = "warning"
+        else:
+            title = "处理完成"
+            message = "已完成处理，未执行归档"
+            severity = "warning"
+    elif event_kind == "job_plan_failed":
+        title = "归档失败"
+        message = "生成归档计划失败"
+        severity = "error"
+    elif event_kind == "job_apply_failed":
+        title = "归档失败"
+        message = "执行归档失败"
+        severity = "error"
+    elif event_kind == "job_request_rejected":
+        title = "归档失败"
+        message = "归档请求被拒绝"
+        severity = "error"
+    elif event_kind == "job_request_failed":
+        title = "归档失败"
+        message = "处理归档请求失败"
+        severity = "error"
+    else:
+        title = "归档失败"
+        message = "归档任务失败"
+        severity = "error"
+
+    return NotificationPresentation(
+        severity=severity,
+        title=title,
+        message=message,
+        markdown=_render_notification_markdown(
+            title=title,
+            subject=subject,
+            message=message,
+        ),
+    )
+
+
+def _notification_subject(job: JobRecord | None) -> str:
+    if job is None:
+        return "归档任务"
+    return f"《{job.series_name}》"
 
 
 def _render_notification_markdown(
     *,
-    event_kind: str,
     title: str,
+    subject: str,
     message: str,
-    job: JobRecord | None,
-    job_request: JobRequestRecord | None,
-    payload: dict[str, object],
 ) -> str:
-    lines = [f"# {title}", "", message, ""]
-    lines.append(f"- 事件：`{event_kind}`")
-    if job is not None:
-        lines.append(f"- 系列：`{job.series_name}`")
-        lines.append(f"- Job ID：`{job.id}`")
-        if job.tmdb_id is not None:
-            lines.append(f"- TMDB：`{job.tmdb_id}`")
-    if job_request is not None:
-        lines.append(f"- Job Request ID：`{job_request.id}`")
-        lines.append(f"- 请求动作：`{job_request.kind}`")
-    if "finalize_status" in payload:
-        lines.append(f"- 完成状态：`{payload['finalize_status']}`")
-    error_stage = payload.get("error_stage")
-    if isinstance(error_stage, str) and error_stage:
-        lines.append(f"- 错误阶段：`{error_stage}`")
-    error_message = payload.get("error_message")
-    if isinstance(error_message, str) and error_message:
-        lines.extend(["", "```text", error_message, "```"])
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            _escape_telegram_markdown_v2(title),
+            "",
+            _escape_telegram_markdown_v2(subject),
+            _escape_telegram_markdown_v2(message),
+        ]
+    )
+
+
+def _escape_telegram_markdown_v2(text: str) -> str:
+    escaped: list[str] = []
+    for char in text:
+        if char in _TELEGRAM_MARKDOWN_V2_SPECIALS:
+            escaped.append("\\")
+        escaped.append(char)
+    return "".join(escaped)
 
 
 def _retry_at_iso(attempt_count: int) -> str:

@@ -153,6 +153,10 @@ def test_worker_apply_request_writes_result_and_rollback_artifacts(
     assert not series_dir.exists()
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_apply_succeeded"]
+    assert notifications[0].severity == "warning"
+    assert notifications[0].title == "处理完成"
+    assert notifications[0].message == "已完成处理，源目录已清理"
+    assert notifications[0].markdown == "处理完成\n\n《ShowA》\n已完成处理，源目录已清理"
     assert notifications[0].payload == {"finalize_status": "deleted"}
     assert notifications[0].delivery_status == "disabled"
 
@@ -188,6 +192,9 @@ def test_worker_failed_job_is_persisted_for_restart(
     assert reloaded_job.error_stage == "plan"
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_plan_failed"]
+    assert notifications[0].severity == "error"
+    assert notifications[0].title == "归档失败"
+    assert notifications[0].message == "生成归档计划失败"
     assert notifications[0].payload["error_stage"] == "plan"
     assert notifications[0].delivery_status == "disabled"
     assert "fail" not in notifications[0].message.casefold()
@@ -215,6 +222,10 @@ def test_worker_rejected_request_creates_notification(
     assert updated_request.status == "rejected"
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_request_rejected"]
+    assert notifications[0].severity == "error"
+    assert notifications[0].title == "归档失败"
+    assert notifications[0].message == "归档请求被拒绝"
+    assert notifications[0].markdown == "归档失败\n\n《ShowA》\n归档请求被拒绝"
     assert notifications[0].job_request_id == request.id
     assert notifications[0].payload == {
         "request_action": "apply_job",
@@ -251,6 +262,9 @@ def test_worker_request_failure_creates_notification(
     assert updated_request.status == "failed"
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_request_failed"]
+    assert notifications[0].severity == "error"
+    assert notifications[0].title == "归档失败"
+    assert notifications[0].message == "处理归档请求失败"
     assert notifications[0].job_request_id == request.id
     assert notifications[0].delivery_status == "disabled"
 
@@ -277,6 +291,9 @@ def test_worker_recover_emits_apply_failed_notification(
     assert recovered_job.status == "failed"
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_apply_failed"]
+    assert notifications[0].severity == "error"
+    assert notifications[0].title == "归档失败"
+    assert notifications[0].message == "执行归档失败"
     assert notifications[0].payload["error_stage"] == "apply"
     assert notifications[0].delivery_status == "disabled"
 
@@ -317,6 +334,9 @@ def test_worker_apply_failure_creates_notification(
     assert updated_request.status == "succeeded"
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_apply_failed"]
+    assert notifications[0].severity == "error"
+    assert notifications[0].title == "归档失败"
+    assert notifications[0].message == "执行归档失败"
     assert notifications[0].payload["error_stage"] == "apply"
     assert notifications[0].delivery_status == "disabled"
 
