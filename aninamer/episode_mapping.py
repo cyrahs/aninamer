@@ -37,6 +37,7 @@ def parse_episode_mapping_output(
     video_ids: set[int],
     subtitle_ids: set[int],
     season_episode_counts: Mapping[int, int],
+    existing_episode_numbers_by_season: Mapping[int, Sequence[int]] | None = None,
 ) -> EpisodeMappingResult:
     try:
         json_text = extract_first_json_object(text)
@@ -71,6 +72,10 @@ def parse_episode_mapping_output(
     used_videos: set[int] = set()
     used_subtitles: set[int] = set()
     season_claims: dict[int, set[int]] = {}
+    existing_claims = {
+        season: {episode for episode in episode_numbers if isinstance(episode, int)}
+        for season, episode_numbers in (existing_episode_numbers_by_season or {}).items()
+    }
 
     for idx, entry in enumerate(eps, start=1):
         if not isinstance(entry, dict):
@@ -140,7 +145,12 @@ def parse_episode_mapping_output(
             subtitle_list.append(sub_id)
 
         claimed = season_claims.setdefault(s, set())
+        existing_for_season = existing_claims.get(s, set())
         for episode_number in range(e1, e2 + 1):
+            if episode_number in existing_for_season:
+                raise LLMOutputError(
+                    f"episode {episode_number} in season {s} already exists in destination inventory"
+                )
             if episode_number in claimed:
                 raise LLMOutputError(
                     f"episode overlap in season {s} at episode {episode_number}"
@@ -166,9 +176,12 @@ def map_episodes_with_llm(
     series_name_zh_cn: str,
     year: int | None,
     season_episode_counts: Mapping[int, int],
+    regular_seasons_zh: Mapping[int, SeasonDetails] | None = None,
+    regular_seasons_en: Mapping[int, SeasonDetails] | None = None,
     specials_zh: SeasonDetails | None,
     specials_en: SeasonDetails | None,
     scan: ScanResult,
+    existing_episode_numbers_by_season: Mapping[int, Sequence[int]] | None = None,
     existing_s00_files: Sequence[str] | None = None,
     llm: LLMClient,
     max_output_tokens: int = 2048,
@@ -189,10 +202,13 @@ def map_episodes_with_llm(
         year=year,
         series_dir=scan.series_dir.name,
         season_episode_counts=season_episode_counts,
+        regular_seasons_zh=regular_seasons_zh,
+        regular_seasons_en=regular_seasons_en,
         specials_zh=specials_zh,
         specials_en=specials_en,
         videos=scan.videos,
         subtitles=scan.subtitles,
+        existing_episode_numbers_by_season=existing_episode_numbers_by_season,
         existing_s00_files=existing_s00_files,
     )
     logger.debug(
@@ -214,6 +230,7 @@ def map_episodes_with_llm(
                 video_ids={video.id for video in scan.videos},
                 subtitle_ids={subtitle.id for subtitle in scan.subtitles},
                 season_episode_counts=season_episode_counts,
+                existing_episode_numbers_by_season=existing_episode_numbers_by_season,
             )
             mapped_subtitles_count = sum(
                 len(item.subtitle_ids) for item in result.items

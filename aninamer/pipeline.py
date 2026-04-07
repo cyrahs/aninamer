@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+import re
 from typing import Callable, Sequence
 
 from aninamer.apply import ApplyResult, apply_rename_plan
@@ -16,16 +17,16 @@ from aninamer.plan import (
     RenamePlan,
     build_rename_plan,
     format_season_folder,
-    format_series_root_folder,
 )
-from aninamer.scanner import scan_series_dir
-from aninamer.tmdb_client import TMDBClient, TvSearchResult
+from aninamer.scanner import VIDEO_EXTS, scan_series_dir
+from aninamer.tmdb_client import SeasonDetails, TMDBClient, TvSearchResult
 from aninamer.tmdb_resolve import (
     resolve_tmdb_search_title_with_llm,
     resolve_tmdb_tv_id_with_llm,
 )
 
 logger = logging.getLogger(__name__)
+_EPISODE_PATTERN = re.compile(r"S(?P<season>\d{2})E(?P<e1>\d{2})(?:-E(?P<e2>\d{2}))?")
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,13 @@ class ApplyExecutionResult:
     applied_count: int
 
 
+@dataclass(frozen=True)
+class ExistingEpisodeInventory:
+    matched_series_dirs: tuple[Path, ...]
+    occupied_episode_numbers_by_season: dict[int, tuple[int, ...]]
+    existing_s00_files: tuple[str, ...]
+
+
 def tmdb_client_from_env() -> TMDBClient:
     api_key = os.getenv("TMDB_API_KEY", "").strip()
     if not api_key:
@@ -53,19 +61,74 @@ def tmdb_client_from_settings(settings: TmdbConfig) -> TMDBClient:
     return TMDBClient(api_key=settings.api_key, timeout=settings.timeout)
 
 
-def list_existing_s00_files(
+def _find_existing_series_dirs_by_tmdb_id(output_root: Path, tmdb_id: int) -> tuple[Path, ...]:
+    if not output_root.exists() or not output_root.is_dir():
+        return ()
+
+    matches: list[Path] = []
+    for path in output_root.iterdir():
+        if not path.is_dir():
+            continue
+        try:
+            path_tmdb_id = extract_tmdb_id_tag(path.name)
+        except ValueError:
+            logger.warning("inventory: skipping invalid tmdb tag dir=%s", path)
+            continue
+        if path_tmdb_id == tmdb_id:
+            matches.append(path)
+
+    matches.sort(key=lambda path: path.name.casefold())
+    return tuple(matches)
+
+
+def _parse_existing_episode_slot(file_name: str) -> tuple[int, tuple[int, ...]] | None:
+    match = _EPISODE_PATTERN.search(file_name)
+    if match is None:
+        return None
+
+    season = int(match.group("season"))
+    episode_start = int(match.group("e1"))
+    raw_episode_end = match.group("e2")
+    episode_end = int(raw_episode_end) if raw_episode_end is not None else episode_start
+    return season, tuple(range(episode_start, episode_end + 1))
+
+
+def inspect_existing_episode_inventory(
     output_root: Path,
-    series_name_zh_cn: str,
-    year: int | None,
     tmdb_id: int,
-) -> list[str]:
-    series_folder = format_series_root_folder(series_name_zh_cn, year, tmdb_id)
-    s00_dir = output_root / series_folder / format_season_folder(0)
-    if not s00_dir.exists() or not s00_dir.is_dir():
-        return []
-    names = [path.name for path in s00_dir.iterdir() if path.is_file()]
-    names.sort(key=lambda value: value.casefold())
-    return names
+) -> ExistingEpisodeInventory:
+    matched_series_dirs = _find_existing_series_dirs_by_tmdb_id(output_root, tmdb_id)
+    occupied_episode_numbers_by_season: dict[int, set[int]] = {}
+    existing_s00_files: set[str] = set()
+
+    for series_dir in matched_series_dirs:
+        for path in series_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix.lower() not in VIDEO_EXTS:
+                continue
+            parsed_slot = _parse_existing_episode_slot(path.name)
+            if parsed_slot is None:
+                continue
+
+            season, episode_numbers = parsed_slot
+            occupied_episode_numbers_by_season.setdefault(season, set()).update(
+                episode_numbers
+            )
+            if season == 0:
+                existing_s00_files.add(path.name)
+
+    normalized_occupancy = {
+        season: tuple(sorted(episode_numbers))
+        for season, episode_numbers in occupied_episode_numbers_by_season.items()
+    }
+    sorted_s00_files = tuple(sorted(existing_s00_files, key=lambda value: value.casefold()))
+
+    return ExistingEpisodeInventory(
+        matched_series_dirs=matched_series_dirs,
+        occupied_episode_numbers_by_season=normalized_occupancy,
+        existing_s00_files=sorted_s00_files,
+    )
 
 
 def search_tmdb_candidates(
@@ -200,6 +263,20 @@ def build_rename_plan_for_series(
     season_episode_counts = {
         season.season_number: season.episode_count for season in details.seasons
     }
+    regular_seasons_zh: dict[int, SeasonDetails] = {}
+    regular_seasons_en: dict[int, SeasonDetails] = {}
+    for season_number in sorted(season_episode_counts):
+        if season_number <= 0:
+            continue
+        if season_episode_counts[season_number] <= 0:
+            continue
+        regular_seasons_zh[season_number] = tmdb.get_season(
+            tmdb_id, season_number, language="zh-CN"
+        )
+        regular_seasons_en[season_number] = tmdb.get_season(
+            tmdb_id, season_number, language="en-US"
+        )
+
     specials_count = season_episode_counts.get(0, 0)
     if specials_count > 0:
         specials_zh = tmdb.get_season(tmdb_id, 0, language="zh-CN")
@@ -211,21 +288,21 @@ def build_rename_plan_for_series(
     if llm_for_mapping_factory is None:
         raise ValueError("llm_for_mapping_factory is required")
     llm_for_mapping = llm_for_mapping_factory()
-    existing_s00_files = list_existing_s00_files(
-        output_root,
-        series_name_zh_cn,
-        year,
-        tmdb_id,
-    )
+    existing_inventory = inspect_existing_episode_inventory(output_root, tmdb_id)
     mapping = map_episodes_with_llm(
         tmdb_id=tmdb_id,
         series_name_zh_cn=series_name_zh_cn,
         year=year,
         season_episode_counts=season_episode_counts,
+        regular_seasons_zh=regular_seasons_zh,
+        regular_seasons_en=regular_seasons_en,
         specials_zh=specials_zh,
         specials_en=specials_en,
         scan=scan,
-        existing_s00_files=existing_s00_files,
+        existing_episode_numbers_by_season=(
+            existing_inventory.occupied_episode_numbers_by_season
+        ),
+        existing_s00_files=existing_inventory.existing_s00_files,
         llm=llm_for_mapping,
         max_output_tokens=options.max_output_tokens,
     )

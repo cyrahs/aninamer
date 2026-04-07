@@ -28,6 +28,32 @@ def test_build_episode_mapping_messages_includes_sections_and_sanitizes() -> Non
             )
         ],
     )
+    regular_zh = {
+        1: SeasonDetails(
+            id=3,
+            season_number=1,
+            episodes=[
+                Episode(
+                    episode_number=1,
+                    name="正片|标题\n一",
+                    overview="普通季简介不应出现在提示词中",
+                )
+            ],
+        )
+    }
+    regular_en = {
+        1: SeasonDetails(
+            id=4,
+            season_number=1,
+            episodes=[
+                Episode(
+                    episode_number=1,
+                    name="Episode\tOne",
+                    overview="Regular season overview should not appear",
+                )
+            ],
+        )
+    }
     videos = [
         FileCandidate(id=1, rel_path="dir|a\nb.mkv", ext=".mkv", size_bytes=123)
     ]
@@ -42,10 +68,13 @@ def test_build_episode_mapping_messages_includes_sections_and_sanitizes() -> Non
         year=2020,
         series_dir="Series Name S2",
         season_episode_counts={0: 2, 1: 12},
+        regular_seasons_zh=regular_zh,
+        regular_seasons_en=regular_en,
         specials_zh=specials_zh,
         specials_en=specials_en,
         videos=videos,
         subtitles=subtitles,
+        existing_episode_numbers_by_season={0: (1,), 1: (1, 2)},
         existing_s00_files=existing_s00_files,
         max_special_overview_chars=5,
     )
@@ -64,8 +93,15 @@ def test_build_episode_mapping_messages_includes_sections_and_sanitizes() -> Non
     assert "series_dir: Series Name S2" in user
     assert "S00=2" in user
     assert "S01=12" in user
+    assert "regular season episode names:" in user
+    assert "S01|1|正片 标题 一|Episode One" in user
+    assert "Regular season overview should not appear" not in user
+    assert "普通季简介不应出现在提示词中" not in user
     assert "specials (season 0):" in user
     assert "1|OVA Name Z|ABC D|OVA EN|EN OV" in user
+    assert "existing destination episode inventory:" in user
+    assert "S00|1" in user
+    assert "S01|1,2" in user
     assert "existing destination S00 files:" in user
     assert "Series S00E01.mkv" in user
     assert "OVA 02 chs.ass" in user

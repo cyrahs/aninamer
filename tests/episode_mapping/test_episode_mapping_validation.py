@@ -18,6 +18,20 @@ def _fc(i: int, rel: str, ext: str = ".mkv", size: int = 123) -> FileCandidate:
 def test_build_episode_mapping_messages_contains_schema_and_files_and_seasons() -> None:
     videos = [_fc(1, "Show - 01.mkv", ".mkv", 100), _fc(2, "Show - OP.mkv", ".mkv", 10)]
     subs = [_fc(3, "Show - 01.ass", ".ass", 50)]
+    s01_zh = SeasonDetails(
+        id=111,
+        season_number=1,
+        episodes=[
+            Episode(episode_number=1, name="第一话", overview="普通集简介不应出现在提示词中"),
+        ],
+    )
+    s01_en = SeasonDetails(
+        id=112,
+        season_number=1,
+        episodes=[
+            Episode(episode_number=1, name="Episode One", overview="regular overview should be omitted"),
+        ],
+    )
     s00_zh = SeasonDetails(
         id=999,
         season_number=0,
@@ -39,10 +53,13 @@ def test_build_episode_mapping_messages_contains_schema_and_files_and_seasons() 
         year=2020,
         series_dir="测试动画 S2",
         season_episode_counts={0: 1, 1: 12},
+        regular_seasons_zh={1: s01_zh},
+        regular_seasons_en={1: s01_en},
         specials_zh=s00_zh,
         specials_en=s00_en,
         videos=videos,
         subtitles=subs,
+        existing_episode_numbers_by_season={0: (1,), 1: (1, 2)},
     )
 
     assert len(msgs) == 2
@@ -56,6 +73,13 @@ def test_build_episode_mapping_messages_contains_schema_and_files_and_seasons() 
     assert "S01=12" in user
     assert "S00=1" in user
     assert "series_dir: 测试动画 S2" in user
+    assert "regular season episode names:" in user
+    assert "S01|1|第一话|Episode One" in user
+    assert "regular overview should be omitted" not in user
+    assert "普通集简介不应出现在提示词中" not in user
+    assert "existing destination episode inventory:" in user
+    assert "S00|1" in user
+    assert "S01|1,2" in user
     # file lines
     assert "1|Show - 01.mkv|100" in user
     assert "2|Show - OP.mkv|10" in user
@@ -142,6 +166,18 @@ def test_parse_episode_mapping_output_rejects_overlapping_ranges() -> None:
             video_ids={1, 2},
             subtitle_ids=set(),
             season_episode_counts={1: 12},
+        )
+
+
+def test_parse_episode_mapping_output_rejects_existing_destination_inventory_overlap() -> None:
+    with pytest.raises(LLMOutputError, match="already exists in destination inventory"):
+        parse_episode_mapping_output(
+            '{"tmdb": 123, "eps": [{"v": 1, "s": 1, "e1": 2, "e2": 2, "u": []}]}',
+            expected_tmdb_id=123,
+            video_ids={1},
+            subtitle_ids=set(),
+            season_episode_counts={1: 12},
+            existing_episode_numbers_by_season={1: (1, 2)},
         )
 
 

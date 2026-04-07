@@ -112,10 +112,13 @@ def build_episode_mapping_messages(
     year: int | None,
     series_dir: str | None = None,
     season_episode_counts: Mapping[int, int],
+    regular_seasons_zh: Mapping[int, SeasonDetails] | None = None,
+    regular_seasons_en: Mapping[int, SeasonDetails] | None = None,
     specials_zh: SeasonDetails | None,
     specials_en: SeasonDetails | None,
     videos: Sequence[FileCandidate],
     subtitles: Sequence[FileCandidate],
+    existing_episode_numbers_by_season: Mapping[int, Sequence[int]] | None = None,
     existing_s00_files: Sequence[str] | None = None,
     max_special_overview_chars: int = 160,
 ) -> list[ChatMessage]:
@@ -127,6 +130,7 @@ def build_episode_mapping_messages(
         "Include ONLY regular episodes (seasons >=1) and OVA/OAD specials in season 0. "
         "Omit OP/ED/PV/trailer/promo/NCOP/NCED/recap/credits/shorts/extras and any uncertain items. "
         "Never map two videos to the same episode range. "
+        "Never map to a season/episode number that is already occupied in the existing destination inventory. "
         "If duplicate releases exist, choose only one (prefer larger size). "
         "If the series_dir or file paths show explicit season markers "
         "(S2, S02, Season 2, 第2季), treat them as strong signals for season selection."
@@ -145,6 +149,9 @@ def build_episode_mapping_messages(
     lines.append("sort eps by v ascending")
     lines.append(
         "u must contain only subtitle ids for that episode video; otherwise leave u empty"
+    )
+    lines.append(
+        "do not map to any season/episode already listed in existing destination episode inventory"
     )
     lines.append(
         "if series_dir or rel_path has explicit season marker (S2/S02/Season 2/第2季), "
@@ -168,6 +175,39 @@ def build_episode_mapping_messages(
     for season_number in sorted(season_episode_counts.keys()):
         count = season_episode_counts[season_number]
         lines.append(f"S{season_number:02d}={count}")
+
+    if regular_seasons_zh or regular_seasons_en:
+        lines.append("regular season episode names:")
+        lines.append("season|ep|name_zh|name_en")
+        zh_by_season = regular_seasons_zh or {}
+        en_by_season = regular_seasons_en or {}
+        regular_season_numbers = sorted(
+            season_number
+            for season_number in (set(zh_by_season) | set(en_by_season))
+            if season_number > 0
+        )
+        for season_number in regular_season_numbers:
+            zh_lookup = {
+                episode.episode_number: episode
+                for episode in zh_by_season.get(
+                    season_number,
+                    SeasonDetails(id=None, season_number=season_number, episodes=[]),
+                ).episodes
+            }
+            en_lookup = {
+                episode.episode_number: episode
+                for episode in en_by_season.get(
+                    season_number,
+                    SeasonDetails(id=None, season_number=season_number, episodes=[]),
+                ).episodes
+            }
+            episode_numbers = sorted(set(zh_lookup) | set(en_lookup))
+            for ep_number in episode_numbers:
+                zh_episode = zh_lookup.get(ep_number)
+                en_episode = en_lookup.get(ep_number)
+                name_zh = _clean_cell(zh_episode.name if zh_episode else None)
+                name_en = _clean_cell(en_episode.name if en_episode else None)
+                lines.append(f"S{season_number:02d}|{ep_number}|{name_zh}|{name_en}")
 
     if 0 in season_episode_counts and (specials_zh or specials_en):
         lines.append("specials (season 0):")
@@ -197,6 +237,16 @@ def build_episode_mapping_messages(
                 max_chars=max_special_overview_chars,
             )
             lines.append(f"{ep_number}|{name_zh}|{overview_zh}|{name_en}|{overview_en}")
+
+    if existing_episode_numbers_by_season:
+        lines.append("existing destination episode inventory:")
+        lines.append("season|episodes")
+        for season_number in sorted(existing_episode_numbers_by_season):
+            episode_numbers = existing_episode_numbers_by_season[season_number]
+            cleaned_numbers = [str(value) for value in episode_numbers if isinstance(value, int)]
+            if not cleaned_numbers:
+                continue
+            lines.append(f"S{season_number:02d}|{','.join(cleaned_numbers)}")
 
     if existing_s00_files:
         lines.append("existing destination S00 files:")
