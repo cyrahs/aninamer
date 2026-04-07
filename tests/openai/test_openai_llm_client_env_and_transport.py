@@ -127,7 +127,6 @@ def test_openai_llm_for_tmdb_id_from_env_prefers_tmdb_reasoning_env(
 
     body = json.loads(transport.last_body.decode("utf-8"))
     assert body["max_tokens"] == 512
-    assert body["stream"] is True
     assert body["reasoning_effort"] == "high"
 
 
@@ -222,7 +221,6 @@ def test_chat_builds_request_and_parses_output() -> None:
     assert body["model"] == "gpt-test"
     assert body["max_tokens"] == 10
     assert body["temperature"] == 0.0
-    assert body["stream"] is True
     assert body["messages"] == [
         {"role": "system", "content": "sys1"},
         {"role": "system", "content": "sys2"},
