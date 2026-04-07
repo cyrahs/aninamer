@@ -1,24 +1,16 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
-from aninamer.tmdb_client import TMDBClient
-
-
-def _env_present(name: str) -> bool:
-    v = os.getenv(name)
-    return v is not None and v.strip() != ""
+from aninamer.config import TmdbConfig
+from aninamer.pipeline import tmdb_client_from_settings
 
 
 @pytest.mark.integration
-def test_tmdb_real_search_details_and_season_smoke() -> None:
-    if not _env_present("TMDB_API_KEY"):
-        pytest.skip("TMDB_API_KEY not set")
-
-    api_key = os.environ["TMDB_API_KEY"].strip()
-    client = TMDBClient(api_key=api_key, timeout=30.0)
+def test_tmdb_real_search_details_and_season_smoke(
+    integration_tmdb_settings: TmdbConfig,
+) -> None:
+    client = tmdb_client_from_settings(integration_tmdb_settings)
 
     # Use a stable, widely known query to reduce flakiness.
     results = client.search_tv("Attack on Titan", language="en-US", page=1)

@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from aninamer.config import load_config
+import pytest
+
+from aninamer.config import (
+    load_config,
+    load_openai_settings_from_env_or_config,
+    load_tmdb_settings_from_env_or_config,
+)
 
 
-def test_load_config_parses_worker_and_watch_roots(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.toml"
-    config_path.write_text(
+def _write_full_config(path: Path) -> None:
+    path.write_text(
         """
 log_path = "./logs"
 
@@ -46,6 +51,11 @@ output_root = "/output"
 """.strip(),
         encoding="utf-8",
     )
+
+
+def test_load_config_parses_worker_and_watch_roots(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    _write_full_config(config_path)
 
     config = load_config(config_path)
 
@@ -112,3 +122,83 @@ output_root = "/output"
 
     assert config.notifications is None
     assert config.notifications_warning is not None
+
+
+def test_load_openai_settings_from_env_or_config_falls_back_to_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    _write_full_config(config_path)
+
+    monkeypatch.setenv("ANINAMER_CONFIG_PATH", str(config_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_TIMEOUT", raising=False)
+    monkeypatch.delenv("OPENAI_REASONING_EFFORT_CHORE", raising=False)
+    monkeypatch.delenv("OPENAI_REASONING_EFFORT_MAPPING", raising=False)
+
+    settings = load_openai_settings_from_env_or_config()
+
+    assert settings.api_key == "openai-key"
+    assert settings.model == "gpt-5.2"
+    assert settings.base_url == "https://api.openai.com"
+    assert settings.timeout == 75.0
+    assert settings.reasoning_effort_chore == "low"
+    assert settings.reasoning_effort_mapping == "medium"
+
+
+def test_load_tmdb_settings_from_env_or_config_falls_back_to_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    _write_full_config(config_path)
+
+    monkeypatch.setenv("ANINAMER_CONFIG_PATH", str(config_path))
+    monkeypatch.delenv("TMDB_API_KEY", raising=False)
+    monkeypatch.delenv("TMDB_TIMEOUT", raising=False)
+
+    settings = load_tmdb_settings_from_env_or_config()
+
+    assert settings.api_key == "tmdb-key"
+    assert settings.timeout == 45.0
+
+
+def test_load_openai_settings_from_env_or_config_prefers_env_without_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_config = tmp_path / "missing.toml"
+    monkeypatch.setenv("ANINAMER_CONFIG_PATH", str(missing_config))
+    monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
+    monkeypatch.setenv("OPENAI_MODEL", "env-model")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai.example.test")
+    monkeypatch.setenv("OPENAI_TIMEOUT", "90")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_CHORE", "high")
+    monkeypatch.setenv("OPENAI_REASONING_EFFORT_MAPPING", "medium")
+
+    settings = load_openai_settings_from_env_or_config()
+
+    assert settings.api_key == "env-openai-key"
+    assert settings.model == "env-model"
+    assert settings.base_url == "https://openai.example.test"
+    assert settings.timeout == 90.0
+    assert settings.reasoning_effort_chore == "high"
+    assert settings.reasoning_effort_mapping == "medium"
+
+
+def test_load_tmdb_settings_from_env_or_config_prefers_env_without_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_config = tmp_path / "missing.toml"
+    monkeypatch.setenv("ANINAMER_CONFIG_PATH", str(missing_config))
+    monkeypatch.setenv("TMDB_API_KEY", "env-tmdb-key")
+    monkeypatch.setenv("TMDB_TIMEOUT", "55")
+
+    settings = load_tmdb_settings_from_env_or_config()
+
+    assert settings.api_key == "env-tmdb-key"
+    assert settings.timeout == 55.0

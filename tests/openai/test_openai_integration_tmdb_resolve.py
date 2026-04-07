@@ -1,26 +1,19 @@
 from __future__ import annotations
 
-import os
-
 import pytest
 
-from aninamer.openai_llm_client import openai_llm_for_tmdb_id_from_env
+from aninamer.config import OpenAISettings
+from aninamer.openai_llm_client import openai_llm_for_tmdb_id_from_settings
 from aninamer.tmdb_client import TvSearchResult
 from aninamer.tmdb_resolve import resolve_tmdb_tv_id_with_llm
 
 
-def _env_present(name: str) -> bool:
-    v = os.getenv(name)
-    return v is not None and v.strip() != ""
-
-
 @pytest.mark.integration
-def test_resolve_tmdb_id_with_real_llm_smoke() -> None:
-    if not (_env_present("OPENAI_API_KEY") and _env_present("OPENAI_MODEL")):
-        pytest.skip("OPENAI_API_KEY and OPENAI_MODEL not set")
-
+def test_resolve_tmdb_id_with_real_llm_smoke(
+    integration_openai_settings: OpenAISettings,
+) -> None:
     # Uses the TMDB-id reasoning profile (OPENAI_REASONING_EFFORT_CHORE, default low).
-    llm = openai_llm_for_tmdb_id_from_env()
+    llm = openai_llm_for_tmdb_id_from_settings(integration_openai_settings)
 
     dirname = "完全匹配作品名"
     candidates = [
@@ -47,17 +40,16 @@ def test_resolve_tmdb_id_with_real_llm_smoke() -> None:
 
 
 @pytest.mark.integration
-def test_resolve_tmdb_id_charlotte() -> None:
+def test_resolve_tmdb_id_charlotte(
+    integration_openai_settings: OpenAISettings,
+) -> None:
     """
     Real case: keyword 'Charlotte' should resolve to TMDB ID 63145 (Charlotte anime, 2015).
 
     This tests the LLM's ability to select the correct anime from 7 animation results
     filtered by search_tv_anime (scraped from TMDB API zh-CN search).
     """
-    if not (_env_present("OPENAI_API_KEY") and _env_present("OPENAI_MODEL")):
-        pytest.skip("OPENAI_API_KEY and OPENAI_MODEL not set")
-
-    llm = openai_llm_for_tmdb_id_from_env()
+    llm = openai_llm_for_tmdb_id_from_settings(integration_openai_settings)
 
     dirname = "Charlotte"
     # Real TMDB search_tv_anime results for "Charlotte" (zh-CN) - filtered by Animation genre

@@ -1,26 +1,26 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from pathlib import Path
 import re
 
 import pytest
 
+from aninamer.config import OpenAISettings, TmdbConfig
 from aninamer.episode_mapping import (
     EpisodeMapItem,
     EpisodeMappingResult,
     map_episodes_with_llm,
 )
 from aninamer.openai_llm_client import (
-    openai_llm_for_tmdb_id_from_env,
-    openai_llm_from_env,
+    openai_llm_for_tmdb_id_from_settings,
+    openai_llm_from_settings,
 )
-from aninamer.pipeline import search_tmdb_candidates
+from aninamer.pipeline import search_tmdb_candidates, tmdb_client_from_settings
 from aninamer.plan import RenamePlan, build_rename_plan
 from aninamer.plan_io import read_rename_plan_json
 from aninamer.scanner import SUBTITLE_EXTS, VIDEO_EXTS, scan_series_dir
-from aninamer.tmdb_client import TMDBClient, TMDBError
+from aninamer.tmdb_client import TMDBError
 from aninamer.tmdb_resolve import resolve_tmdb_tv_id_with_llm
 
 
@@ -76,11 +76,6 @@ CASES = _load_cases()
 
 def _normalize_tree_line(line: str) -> str:
     return line.replace("\u00a0", " ")
-
-
-def _env_present(name: str) -> bool:
-    value = os.getenv(name)
-    return value is not None and value.strip() != ""
 
 
 def _parse_tree_entries(tree_path: Path) -> tuple[Path, list[TreeEntry]]:
@@ -244,15 +239,11 @@ def test_real_case_plan_matches(case: RealCase, tmp_path: Path) -> None:
 @pytest.mark.integration
 @pytest.mark.parametrize("case", CASES, ids=[case.name for case in CASES])
 def test_real_case_end_to_end_with_real_llm(
-    case: RealCase, tmp_path: Path
+    case: RealCase,
+    tmp_path: Path,
+    integration_openai_settings: OpenAISettings,
+    integration_tmdb_settings: TmdbConfig,
 ) -> None:
-    if not (
-        _env_present("OPENAI_API_KEY")
-        and _env_present("OPENAI_MODEL")
-        and _env_present("TMDB_API_KEY")
-    ):
-        pytest.skip("OPENAI_API_KEY, OPENAI_MODEL, or TMDB_API_KEY not set")
-
     plan = read_rename_plan_json(case.plan_path)
     tree_root, entries = _parse_tree_entries(case.tree_path)
 
@@ -261,11 +252,13 @@ def test_real_case_end_to_end_with_real_llm(
 
     scan = scan_series_dir(series_dir)
 
-    tmdb = TMDBClient(api_key=os.environ["TMDB_API_KEY"].strip(), timeout=30.0)
+    tmdb = tmdb_client_from_settings(integration_tmdb_settings)
     candidates = search_tmdb_candidates(
         tmdb,
         series_dir.name,
-        llm_title_factory=openai_llm_for_tmdb_id_from_env,
+        llm_title_factory=lambda: openai_llm_for_tmdb_id_from_settings(
+            integration_openai_settings
+        ),
     )
 
     if len(candidates) == 1:
@@ -274,7 +267,7 @@ def test_real_case_end_to_end_with_real_llm(
         tmdb_id = resolve_tmdb_tv_id_with_llm(
             series_dir.name,
             candidates,
-            openai_llm_for_tmdb_id_from_env(),
+            openai_llm_for_tmdb_id_from_settings(integration_openai_settings),
             max_candidates=min(10, len(candidates)),
         )
 
@@ -300,7 +293,7 @@ def test_real_case_end_to_end_with_real_llm(
         except TMDBError:
             specials_en = None
 
-    llm = openai_llm_from_env()
+    llm = openai_llm_from_settings(integration_openai_settings)
     mapping = map_episodes_with_llm(
         tmdb_id=tmdb_id,
         series_name_zh_cn=series_name_zh_cn,

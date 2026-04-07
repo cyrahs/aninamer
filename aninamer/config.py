@@ -79,6 +79,64 @@ def default_config_path() -> Path:
     return Path("config.toml")
 
 
+def load_tmdb_settings_from_env_or_config(path: Path | None = None) -> TmdbConfig:
+    api_key = _read_optional_env("TMDB_API_KEY")
+    timeout = _read_optional_float_env("TMDB_TIMEOUT")
+
+    if api_key is not None:
+        return TmdbConfig(api_key=api_key, timeout=timeout or 30.0)
+
+    try:
+        config = load_config(path)
+    except (FileNotFoundError, ValueError) as exc:
+        raise ValueError(
+            "TMDB settings require TMDB_API_KEY or config.toml [tmdb]"
+        ) from exc
+
+    return TmdbConfig(api_key=config.tmdb.api_key, timeout=timeout or config.tmdb.timeout)
+
+
+def load_openai_settings_from_env_or_config(
+    path: Path | None = None,
+) -> OpenAISettings:
+    api_key = _read_optional_env("OPENAI_API_KEY")
+    model = _read_optional_env("OPENAI_MODEL")
+    base_url = _read_optional_env("OPENAI_BASE_URL")
+    timeout = _read_optional_float_env("OPENAI_TIMEOUT")
+    reasoning_effort_chore = _read_optional_env("OPENAI_REASONING_EFFORT_CHORE")
+    reasoning_effort_mapping = _read_optional_env("OPENAI_REASONING_EFFORT_MAPPING")
+
+    if api_key is not None and model is not None:
+        return OpenAISettings(
+            api_key=api_key,
+            model=model,
+            base_url=base_url or "https://api.openai.com",
+            timeout=timeout or 60.0,
+            reasoning_effort_chore=reasoning_effort_chore or "low",
+            reasoning_effort_mapping=reasoning_effort_mapping,
+        )
+
+    try:
+        config = load_config(path)
+    except (FileNotFoundError, ValueError) as exc:
+        raise ValueError(
+            "OpenAI settings require OPENAI_API_KEY and OPENAI_MODEL or config.toml [openai]"
+        ) from exc
+
+    return OpenAISettings(
+        api_key=api_key or config.openai.api_key,
+        model=model or config.openai.model,
+        base_url=base_url or config.openai.base_url,
+        timeout=timeout or config.openai.timeout,
+        reasoning_effort_chore=(
+            reasoning_effort_chore or config.openai.reasoning_effort_chore or "low"
+        ),
+        reasoning_effort_mapping=(
+            reasoning_effort_mapping or config.openai.reasoning_effort_mapping
+        ),
+    )
+
+
 def load_config(path: Path | None = None) -> AppConfig:
     config_path = path or default_config_path()
     with config_path.open("rb") as handle:
@@ -286,3 +344,26 @@ def _require_non_negative_int(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{label} must be a non-negative integer")
     return value
+
+
+def _read_optional_env(name: str) -> str | None:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    return cleaned
+
+
+def _read_optional_float_env(name: str) -> float | None:
+    value = _read_optional_env(name)
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except ValueError:
+        return None
+    if parsed <= 0:
+        return None
+    return parsed

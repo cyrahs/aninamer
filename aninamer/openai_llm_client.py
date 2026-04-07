@@ -181,6 +181,60 @@ def _extract_error_message(body: bytes) -> str:
     return "unknown error"
 
 
+def _collect_stream_event_payloads(body: bytes) -> list[str]:
+    text = body.decode("utf-8", errors="replace")
+    events: list[str] = []
+    current_lines: list[str] = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip("\r")
+        if line == "":
+            if current_lines:
+                events.append("\n".join(current_lines))
+                current_lines = []
+            continue
+        if line.startswith("data:"):
+            current_lines.append(line[5:].lstrip())
+
+    if current_lines:
+        events.append("\n".join(current_lines))
+
+    return events
+
+
+def _extract_streamed_content(body: bytes) -> str | None:
+    events = _collect_stream_event_payloads(body)
+    if not events:
+        return None
+
+    parts: list[str] = []
+    for event_payload in events:
+        if event_payload == "[DONE]":
+            break
+        try:
+            payload = json.loads(event_payload)
+        except json.JSONDecodeError as exc:
+            raise OpenAIError(f"invalid JSON stream event: {exc.msg}") from exc
+        if not isinstance(payload, dict):
+            raise OpenAIError("invalid stream event: expected object")
+
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            continue
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            continue
+        delta = first_choice.get("delta")
+        if not isinstance(delta, dict):
+            continue
+
+        content = delta.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+
+    return "".join(parts)
+
+
 class OpenAIChatCompletionsLLM(LLMClient):
     def __init__(
         self, config: OpenAIConfig, *, transport: Transport | None = None
@@ -203,6 +257,7 @@ class OpenAIChatCompletionsLLM(LLMClient):
             "messages": chat_messages,
             "max_tokens": max_output_tokens,
             "temperature": temperature,
+            "stream": True,
         }
 
         # Add reasoning_effort for reasoning models (o1, o3, etc.)
@@ -224,7 +279,7 @@ class OpenAIChatCompletionsLLM(LLMClient):
         headers = {
             "Authorization": f"Bearer {self._config.api_key}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream, application/json",
             "User-Agent": self._config.user_agent,
         }
         response = self._transport(endpoint, body, headers, self._config.timeout)
@@ -233,6 +288,14 @@ class OpenAIChatCompletionsLLM(LLMClient):
         if response.status < 200 or response.status >= 300:
             message = _extract_error_message(response.body)
             raise OpenAIError(f"OpenAI API error {response.status}: {message}")
+
+        streamed_content = _extract_streamed_content(response.body)
+        if streamed_content is not None:
+            result = streamed_content.strip()
+            logger.debug("openai: raw_stream_output_text=%s", result)
+            if not result:
+                raise OpenAIError("empty content in streamed response")
+            return result
 
         payload_obj = _parse_response_json(response.body)
 

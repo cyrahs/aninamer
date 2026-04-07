@@ -1,27 +1,22 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
-from aninamer.openai_llm_client import openai_llm_from_env
+from aninamer.config import OpenAISettings
 from aninamer.episode_mapping import map_episodes_with_llm
+from aninamer.openai_llm_client import openai_llm_from_settings
 from aninamer.scanner import FileCandidate, ScanResult
 from aninamer.tmdb_client import Episode, SeasonDetails
 
 
-def _env_present(name: str) -> bool:
-    v = os.getenv(name)
-    return v is not None and v.strip() != ""
-
-
 @pytest.mark.integration
-def test_episode_mapping_with_real_llm_smoke(tmp_path: Path) -> None:
-    if not (_env_present("OPENAI_API_KEY") and _env_present("OPENAI_MODEL")):
-        pytest.skip("OPENAI_API_KEY and OPENAI_MODEL not set")
-
-    llm = openai_llm_from_env()
+def test_episode_mapping_with_real_llm_smoke(
+    tmp_path: Path,
+    integration_openai_settings: OpenAISettings,
+) -> None:
+    llm = openai_llm_from_settings(integration_openai_settings)
 
     scan = ScanResult(
         series_dir=tmp_path,
@@ -62,7 +57,7 @@ def test_episode_mapping_with_real_llm_smoke(tmp_path: Path) -> None:
         specials_en=specials_en,
         scan=scan,
         llm=llm,
-        max_output_tokens=1024,
+        max_output_tokens=4096,
     )
     # Must at least map the two explicit S01E01/S01E02, and map OVA to S00E01.
     by_vid = {it.video_id: it for it in res.items}

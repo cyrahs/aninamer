@@ -20,7 +20,12 @@ from aninamer.config import (
     TmdbConfig,
     WatchRootConfig,
     WorkerConfig,
+    load_openai_settings_from_env_or_config,
+    load_tmdb_settings_from_env_or_config,
 )
+from aninamer.errors import OpenAIError
+from aninamer.llm_client import ChatMessage
+from aninamer.openai_llm_client import openai_llm_for_tmdb_id_from_settings
 from aninamer.store import RuntimeStore
 
 
@@ -120,6 +125,31 @@ def runtime_store(postgres_dsn: str) -> RuntimeStore:
             )
             cur.execute("UPDATE runtime_state SET last_scan_at = NULL WHERE id = 1")
     return RuntimeStore(postgres_dsn)
+
+
+@pytest.fixture(scope="session")
+def integration_openai_settings() -> OpenAISettings:
+    try:
+        settings = load_openai_settings_from_env_or_config()
+    except ValueError as exc:
+        pytest.skip(str(exc))
+    try:
+        llm = openai_llm_for_tmdb_id_from_settings(settings)
+        llm.chat(
+            [ChatMessage(role="user", content='Return {"tmdb": 1} only.')],
+            max_output_tokens=4096,
+        )
+    except OpenAIError as exc:
+        pytest.skip(f"OpenAI integration unavailable: {exc}")
+    return settings
+
+
+@pytest.fixture(scope="session")
+def integration_tmdb_settings() -> TmdbConfig:
+    try:
+        return load_tmdb_settings_from_env_or_config()
+    except ValueError as exc:
+        pytest.skip(str(exc))
 
 
 @pytest.fixture

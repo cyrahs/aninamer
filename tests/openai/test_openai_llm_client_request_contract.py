@@ -21,6 +21,7 @@ class FakeTransport:
     last_headers: dict[str, str] | None = None
     reply_status: int = 200
     reply_json: dict | None = None
+    reply_body: bytes | None = None
 
     def __call__(
         self, url: str, body: bytes, headers: dict[str, str], timeout: float
@@ -28,6 +29,13 @@ class FakeTransport:
         self.last_url = url
         self.last_body = body
         self.last_headers = headers
+
+        if self.reply_body is not None:
+            return HttpResponse(
+                status=self.reply_status,
+                body=self.reply_body,
+                headers={"Content-Type": "text/event-stream"},
+            )
 
         payload = self.reply_json or {
             "id": "chatcmpl-test",
@@ -44,8 +52,19 @@ class FakeTransport:
         )
 
 
+def _streaming_reply_body(text: str) -> bytes:
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{"role":"assistant","content":"'
+        + escaped
+        + '"},"finish_reason":null}]}\n\n'
+        'data: {"id":"chatcmpl-test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+        "data: [DONE]\n"
+    ).encode("utf-8")
+
+
 def test_openai_llm_builds_chat_completions_request_and_extracts_text() -> None:
-    transport = FakeTransport()
+    transport = FakeTransport(reply_body=_streaming_reply_body('{"tmdb": 1}'))
     cfg = OpenAIConfig(
         api_key="KEY",
         model="gpt-5.2",
@@ -71,6 +90,7 @@ def test_openai_llm_builds_chat_completions_request_and_extracts_text() -> None:
     assert body["model"] == "gpt-5.2"
     assert body["max_tokens"] == 64
     assert body["temperature"] == 0.0
+    assert body["stream"] is True
     assert isinstance(body["messages"], list)
     assert body["messages"][0]["role"] == "system"
     assert body["messages"][1]["role"] == "user"
@@ -78,6 +98,22 @@ def test_openai_llm_builds_chat_completions_request_and_extracts_text() -> None:
     assert transport.last_headers is not None
     assert "Authorization" in transport.last_headers
     assert transport.last_headers["Authorization"].startswith("Bearer ")
+
+
+def test_openai_llm_falls_back_to_non_stream_json_response() -> None:
+    transport = FakeTransport()
+    cfg = OpenAIConfig(
+        api_key="KEY",
+        model="gpt-5.2",
+        base_url="https://api.openai.com",
+        timeout=30.0,
+        user_agent="aninamer-test/0.0",
+    )
+    llm = OpenAIChatCompletionsLLM(cfg, transport=transport)
+
+    out = llm.chat([ChatMessage(role="user", content='Return {"tmdb": 1}.')])
+
+    assert out.strip() == '{"tmdb": 1}'
 
 
 def test_openai_llm_base_url_with_v1_suffix() -> None:
