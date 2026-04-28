@@ -117,6 +117,11 @@ def test_parse_selected_tmdb_tv_id_accepts_string_value() -> None:
     assert parse_selected_tmdb_tv_id('{"tmdb": "10"}', allowed_ids={10}) == 10
 
 
+def test_parse_selected_tmdb_tv_id_rejects_json_boolean() -> None:
+    with pytest.raises(LLMOutputError, match="tmdb must be int"):
+        parse_selected_tmdb_tv_id('{"tmdb": true}', allowed_ids={1})
+
+
 @pytest.mark.parametrize(
     "text, match",
     [

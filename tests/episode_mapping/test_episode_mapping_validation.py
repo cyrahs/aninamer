@@ -111,6 +111,18 @@ def test_parse_episode_mapping_output_accepts_valid_and_enforces_bounds_and_uniq
     assert res.items[1].season == 0
 
 
+def test_parse_episode_mapping_output_allows_missing_subtitle_ids() -> None:
+    res = parse_episode_mapping_output(
+        '{"tmdb": 123, "eps": [{"v": 1, "s": 1, "e1": 1, "e2": 1}]}',
+        expected_tmdb_id=123,
+        video_ids={1},
+        subtitle_ids=set(),
+        season_episode_counts={1: 12},
+    )
+
+    assert res.items[0].subtitle_ids == ()
+
+
 def test_parse_episode_mapping_output_rejects_wrong_tmdb() -> None:
     with pytest.raises(LLMOutputError):
         parse_episode_mapping_output(
@@ -129,6 +141,48 @@ def test_parse_episode_mapping_output_rejects_extra_top_level_keys() -> None:
             expected_tmdb_id=123,
             video_ids=set(),
             subtitle_ids=set(),
+            season_episode_counts={1: 12},
+        )
+
+
+@pytest.mark.parametrize(
+    "text, match",
+    [
+        (
+            '{"tmdb": true, "eps": []}',
+            "tmdb must be int",
+        ),
+        (
+            '{"tmdb": 123, "eps": [{"v": true, "s": 1, "e1": 1, "e2": 1, "u": []}]}',
+            r"eps\[1\]\.v must be int",
+        ),
+        (
+            '{"tmdb": 123, "eps": [{"v": 1, "s": true, "e1": 1, "e2": 1, "u": []}]}',
+            r"eps\[1\]\.s must be int",
+        ),
+        (
+            '{"tmdb": 123, "eps": [{"v": 1, "s": 1, "e1": true, "e2": 1, "u": []}]}',
+            r"eps\[1\]\.e1 must be int",
+        ),
+        (
+            '{"tmdb": 123, "eps": [{"v": 1, "s": 1, "e1": 1, "e2": true, "u": []}]}',
+            r"eps\[1\]\.e2 must be int",
+        ),
+        (
+            '{"tmdb": 123, "eps": [{"v": 1, "s": 1, "e1": 1, "e2": 1, "u": [true]}]}',
+            r"eps\[1\]\.u must contain only ints",
+        ),
+    ],
+)
+def test_parse_episode_mapping_output_rejects_json_booleans(
+    text: str, match: str
+) -> None:
+    with pytest.raises(LLMOutputError, match=match):
+        parse_episode_mapping_output(
+            text,
+            expected_tmdb_id=123,
+            video_ids={1},
+            subtitle_ids={1},
             season_episode_counts={1: 12},
         )
 

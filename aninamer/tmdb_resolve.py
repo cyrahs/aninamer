@@ -39,7 +39,7 @@ def parse_selected_tmdb_tv_id(text: str, *, allowed_ids: set[int]) -> int:
             tmdb_id = int(stripped)
         else:
             raise LLMOutputError("tmdb must be int")
-    if not isinstance(tmdb_id, int):
+    if type(tmdb_id) is not int:
         raise LLMOutputError("tmdb must be int")
 
     if tmdb_id not in allowed_ids:

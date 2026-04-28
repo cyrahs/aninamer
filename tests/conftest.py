@@ -29,6 +29,29 @@ from aninamer.openai_llm_client import openai_llm_for_tmdb_id_from_settings
 from aninamer.store import RuntimeStore
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-integration",
+        action="store_true",
+        default=False,
+        help="run tests marked integration that may call external services",
+    )
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    if config.getoption("--run-integration"):
+        return
+
+    skip_integration = pytest.mark.skip(
+        reason="integration tests require --run-integration"
+    )
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip_integration)
+
+
 def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))

@@ -30,6 +30,10 @@ class EpisodeMappingResult:
     items: tuple[EpisodeMapItem, ...]
 
 
+def _is_strict_int(value: object) -> bool:
+    return type(value) is int
+
+
 def parse_episode_mapping_output(
     text: str,
     *,
@@ -56,7 +60,7 @@ def parse_episode_mapping_output(
         raise LLMOutputError("expected object with only 'tmdb' and 'eps' keys")
 
     tmdb_id = data.get("tmdb")
-    if not isinstance(tmdb_id, int):
+    if not _is_strict_int(tmdb_id):
         raise LLMOutputError("tmdb must be int")
 
     if tmdb_id != expected_tmdb_id:
@@ -80,13 +84,18 @@ def parse_episode_mapping_output(
     for idx, entry in enumerate(eps, start=1):
         if not isinstance(entry, dict):
             raise LLMOutputError(f"eps[{idx}] must be object")
-        if set(entry.keys()) != {"v", "s", "e1", "e2", "u"}:
+        entry_keys = set(entry.keys())
+        required_keys = {"v", "s", "e1", "e2"}
+        allowed_keys = {"v", "s", "e1", "e2", "u"}
+        if not required_keys.issubset(entry_keys) or not entry_keys.issubset(
+            allowed_keys
+        ):
             raise LLMOutputError(
-                f"eps[{idx}] must have only keys 'v', 's', 'e1', 'e2', 'u'"
+                f"eps[{idx}] must have keys 'v', 's', 'e1', 'e2' and optional 'u' only"
             )
 
         v = entry.get("v")
-        if not isinstance(v, int):
+        if not _is_strict_int(v):
             raise LLMOutputError(f"eps[{idx}].v must be int")
         if v not in video_ids:
             raise LLMOutputError(f"eps[{idx}].v {v} not in video ids")
@@ -95,7 +104,7 @@ def parse_episode_mapping_output(
         used_videos.add(v)
 
         s = entry.get("s")
-        if not isinstance(s, int):
+        if not _is_strict_int(s):
             raise LLMOutputError(f"eps[{idx}].s must be int")
         if s not in season_episode_counts:
             if s == 0:
@@ -104,9 +113,9 @@ def parse_episode_mapping_output(
 
         e1 = entry.get("e1")
         e2 = entry.get("e2")
-        if not isinstance(e1, int):
+        if not _is_strict_int(e1):
             raise LLMOutputError(f"eps[{idx}].e1 must be int")
-        if not isinstance(e2, int):
+        if not _is_strict_int(e2):
             raise LLMOutputError(f"eps[{idx}].e2 must be int")
         if e1 < 1 or e2 < 1:
             raise LLMOutputError(f"eps[{idx}] episodes must be >= 1")
@@ -119,14 +128,14 @@ def parse_episode_mapping_output(
                 f"eps[{idx}] episode range {e1}-{e2} exceeds season {s} count {max_count}"
             )
 
-        u = entry.get("u")
+        u = entry.get("u", [])
         if not isinstance(u, list):
             raise LLMOutputError(f"eps[{idx}].u must be list")
 
         seen_in_item: set[int] = set()
         subtitle_list: list[int] = []
         for sub_id in u:
-            if not isinstance(sub_id, int):
+            if not _is_strict_int(sub_id):
                 raise LLMOutputError(f"eps[{idx}].u must contain only ints")
             if sub_id not in subtitle_ids:
                 raise LLMOutputError(
