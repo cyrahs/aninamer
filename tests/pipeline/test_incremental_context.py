@@ -103,6 +103,45 @@ class FakeTMDBClient:
         )
 
 
+class CoolDeMTMDBClient:
+    def resolve_series_title(
+        self, tv_id: int, *, country_codes: tuple[str, ...] = ()
+    ) -> tuple[str, TvDetails]:
+        return (
+            "高冷的M女",
+            TvDetails(
+                id=tv_id,
+                name="高冷的M女",
+                original_name="クール de M",
+                first_air_date="2025-01-01",
+                seasons=[SeasonSummary(season_number=1, episode_count=2)],
+            ),
+        )
+
+    def get_season(
+        self, tv_id: int, season_number: int, *, language: str = "zh-CN"
+    ) -> SeasonDetails:
+        if season_number != 1:
+            return SeasonDetails(id=None, season_number=season_number, episodes=[])
+        if language == "zh-CN":
+            return SeasonDetails(
+                id=30168601,
+                season_number=1,
+                episodes=[
+                    Episode(episode_number=1, name="出会い", overview=""),
+                    Episode(episode_number=2, name="崩れないオンナ", overview=""),
+                ],
+            )
+        return SeasonDetails(
+            id=30168602,
+            season_number=1,
+            episodes=[
+                Episode(episode_number=1, name="Encounter", overview=""),
+                Episode(episode_number=2, name="The Unbreakable Woman", overview=""),
+            ],
+        )
+
+
 def test_build_rename_plan_for_series_includes_incremental_inventory_and_regular_episode_names(
     tmp_path: Path,
 ) -> None:
@@ -142,3 +181,45 @@ def test_build_rename_plan_for_series_includes_incremental_inventory_and_regular
     assert "S01|1,2" in prompt
     assert "regular overview omitted" not in prompt
     assert "不应进入普通季提示词" not in prompt
+
+
+def test_build_rename_plan_for_series_maps_semantic_title_after_existing_episode(
+    tmp_path: Path,
+) -> None:
+    series_dir = tmp_path / "クール de M {tmdb-301686}"
+    output_root = tmp_path / "library"
+    video_name = "クール de M ～崩れないオンナ～ [中文字幕] [404988].mp4"
+    _write(series_dir / video_name, b"video")
+
+    existing_root = output_root / "高冷的M女 (2025) {tmdb-301686}"
+    _write(existing_root / "S01" / "高冷的M女 S01E01.mp4", b"existing")
+
+    llm = FakeLLM(
+        reply='{"tmdb": 301686, "eps": [{"v": 1, "s": 1, "e1": 2, "e2": 2, "u": []}]}'
+    )
+
+    plan = build_rename_plan_for_series(
+        series_dir=series_dir,
+        output_root=output_root,
+        options=PlanBuildOptions(max_output_tokens=512),
+        tmdb_client_factory=CoolDeMTMDBClient,
+        llm_for_mapping_factory=lambda: llm,
+    )
+
+    assert len(plan.moves) == 1
+    move = plan.moves[0]
+    assert move.kind == "video"
+    assert move.src.name == video_name
+    assert move.dst == (
+        output_root
+        / "高冷的M女 (2025) {tmdb-301686}"
+        / "S01"
+        / "高冷的M女 S01E02.mp4"
+    ).resolve(strict=False)
+
+    assert llm.last_messages is not None
+    prompt = llm.last_messages[1].content
+    assert "existing destination episode inventory:" in prompt
+    assert "S01|1" in prompt
+    assert "S01|2|崩れないオンナ|The Unbreakable Woman" in prompt
+    assert f"1|{video_name}|" in prompt

@@ -107,3 +107,46 @@ def test_build_episode_mapping_messages_includes_sections_and_sanitizes() -> Non
     assert "OVA 02 chs.ass" in user
     assert "1|dir a b.mkv|123" in user
     assert "4|subs file .srt|456" in user
+
+
+def test_build_episode_mapping_messages_guides_semantic_match_after_existing_inventory() -> None:
+    s01_zh = SeasonDetails(
+        id=30168601,
+        season_number=1,
+        episodes=[
+            Episode(episode_number=1, name="出会い", overview=""),
+            Episode(episode_number=2, name="崩れないオンナ", overview=""),
+        ],
+    )
+    videos = [
+        FileCandidate(
+            id=1,
+            rel_path="クール de M ～崩れないオンナ～ [中文字幕] [404988].mp4",
+            ext=".mp4",
+            size_bytes=100,
+        )
+    ]
+
+    messages = build_episode_mapping_messages(
+        tmdb_id=301686,
+        series_name_zh_cn="高冷的M女",
+        year=2025,
+        series_dir="クール de M",
+        season_episode_counts={1: 2},
+        regular_seasons_zh={1: s01_zh},
+        regular_seasons_en={},
+        specials_zh=None,
+        specials_en=None,
+        videos=videos,
+        subtitles=[],
+        existing_episode_numbers_by_season={1: (1,)},
+    )
+
+    system = messages[0].content
+    user = messages[1].content
+    assert "file title semantically matches the TMDB episode title" in system
+    assert "later unoccupied episodes" in user
+    assert "existing destination episode inventory:" in user
+    assert "S01|1" in user
+    assert "S01|2|崩れないオンナ|" in user
+    assert "1|クール de M ～崩れないオンナ～ [中文字幕] [404988].mp4|100" in user

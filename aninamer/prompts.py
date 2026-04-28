@@ -131,6 +131,8 @@ def build_episode_mapping_messages(
         "Omit OP/ED/PV/trailer/promo/NCOP/NCED/recap/credits/shorts/extras and any uncertain items. "
         "Never map two videos to the same episode range. "
         "Never map to a season/episode number that is already occupied in the existing destination inventory. "
+        "If existing inventory occupies earlier episodes, still map files to later unoccupied episodes when a "
+        "file title semantically matches the TMDB episode title. "
         "If duplicate releases exist, choose only one (prefer larger size). "
         "If the series_dir or file paths show explicit season markers "
         "(S2, S02, Season 2, 第2季), treat them as strong signals for season selection."
@@ -152,6 +154,10 @@ def build_episode_mapping_messages(
     )
     lines.append(
         "do not map to any season/episode already listed in existing destination episode inventory"
+    )
+    lines.append(
+        "when existing inventory lists earlier episodes, use rel_path titles and TMDB episode names "
+        "to map current files to later unoccupied episodes"
     )
     lines.append(
         "if series_dir or rel_path has explicit season marker (S2/S02/Season 2/第2季), "

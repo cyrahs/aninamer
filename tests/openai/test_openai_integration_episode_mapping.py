@@ -29,6 +29,9 @@ class EpisodeMappingEvalCase:
     required_mappings: dict[int, tuple[int, int, int]]
     expected_subtitles: dict[int, set[int]]
     forbidden_video_ids: set[int]
+    tmdb_id: int = 123
+    series_name_zh_cn: str = "测试动画"
+    year: int | None = 2020
     forbidden_subtitle_ids: set[int] = field(default_factory=set)
     specials_zh: SeasonDetails | None = None
     specials_en: SeasonDetails | None = None
@@ -38,7 +41,8 @@ class EpisodeMappingEvalCase:
 
 
 def _video(i: int, rel_path: str, *, size: int = 100_000_000) -> FileCandidate:
-    return FileCandidate(id=i, rel_path=rel_path, ext=".mkv", size_bytes=size)
+    ext = Path(rel_path).suffix or ".mkv"
+    return FileCandidate(id=i, rel_path=rel_path, ext=ext, size_bytes=size)
 
 
 def _subtitle(i: int, rel_path: str, *, size: int = 200_000) -> FileCandidate:
@@ -322,6 +326,49 @@ def _existing_inventory_case() -> EpisodeMappingEvalCase:
     )
 
 
+def _semantic_title_existing_inventory_case() -> EpisodeMappingEvalCase:
+    return EpisodeMappingEvalCase(
+        name="semantic_title_existing_inventory",
+        series_dir="クール de M",
+        videos=(
+            _video(
+                1,
+                "クール de M ～崩れないオンナ～ [中文字幕] [404988].mp4",
+                size=100_000_000,
+            ),
+        ),
+        subtitles=(),
+        season_episode_counts={1: 2},
+        tmdb_id=301686,
+        series_name_zh_cn="高冷的M女",
+        year=2025,
+        regular_seasons_zh={
+            1: SeasonDetails(
+                id=30168601,
+                season_number=1,
+                episodes=[
+                    Episode(episode_number=1, name="出会い", overview=""),
+                    Episode(episode_number=2, name="崩れないオンナ", overview=""),
+                ],
+            )
+        },
+        regular_seasons_en={
+            1: SeasonDetails(
+                id=30168602,
+                season_number=1,
+                episodes=[
+                    Episode(episode_number=1, name="Encounter", overview=""),
+                    Episode(episode_number=2, name="The Unbreakable Woman", overview=""),
+                ],
+            )
+        },
+        existing_episode_numbers_by_season={1: (1,)},
+        required_mappings={1: (1, 2, 2)},
+        expected_subtitles={1: set()},
+        forbidden_video_ids=set(),
+    )
+
+
 EPISODE_MAPPING_EVAL_CASES = (
     pytest.param(
         _basic_sequence_case(),
@@ -335,6 +382,11 @@ EPISODE_MAPPING_EVAL_CASES = (
     ),
     pytest.param(
         _existing_inventory_case(), id="existing-inventory", marks=pytest.mark.llm_eval
+    ),
+    pytest.param(
+        _semantic_title_existing_inventory_case(),
+        id="semantic-title-existing-inventory",
+        marks=pytest.mark.llm_eval,
     ),
 )
 
@@ -353,9 +405,9 @@ def test_episode_mapping_real_llm_api_output(
         subtitles=list(case.subtitles),
     )
     messages = build_episode_mapping_messages(
-        tmdb_id=123,
-        series_name_zh_cn="测试动画",
-        year=2020,
+        tmdb_id=case.tmdb_id,
+        series_name_zh_cn=case.series_name_zh_cn,
+        year=case.year,
         series_dir=case.series_dir,
         season_episode_counts=case.season_episode_counts,
         regular_seasons_zh=case.regular_seasons_zh,
@@ -373,7 +425,7 @@ def test_episode_mapping_real_llm_api_output(
     try:
         result = parse_episode_mapping_output(
             raw_output,
-            expected_tmdb_id=123,
+            expected_tmdb_id=case.tmdb_id,
             video_ids={video.id for video in scan.videos},
             subtitle_ids={subtitle.id for subtitle in scan.subtitles},
             season_episode_counts=case.season_episode_counts,
