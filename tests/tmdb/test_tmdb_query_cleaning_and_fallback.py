@@ -197,6 +197,34 @@ def test_search_tmdb_candidates_falls_back_to_llm_title_when_search_empty() -> N
     assert llm_title.calls == 1
 
 
+def test_search_tmdb_candidates_tries_title_without_the_animation_suffix() -> None:
+    tmdb = FakeTMDBClientForLLMTitle(target_query="ながちち永井さん", tmdb_id=298953)
+
+    results = search_tmdb_candidates(
+        tmdb,
+        "ながちち永井さん THE ANIMATION",
+    )
+
+    assert results[0].id == 298953
+    queries = [query for query, _language in tmdb.calls]
+    assert queries.index("ながちち永井さん THE ANIMATION") < queries.index(
+        "ながちち永井さん"
+    )
+
+
+def test_search_tmdb_candidates_tries_traditional_chinese_query_variant() -> None:
+    tmdb = FakeTMDBClientForLLMTitle(target_query="向日葵在夜晚綻放", tmdb_id=248253)
+
+    results = search_tmdb_candidates(
+        tmdb,
+        "向日葵在夜晚绽放",
+    )
+
+    assert results[0].id == 248253
+    queries = [query for query, _language in tmdb.calls]
+    assert queries.index("向日葵在夜晚绽放") < queries.index("向日葵在夜晚綻放")
+
+
 def test_build_rename_plan_error_includes_attempted_queries(tmp_path: Path) -> None:
     series_dir = tmp_path / "[X] TotallyUnfindableTitle [1080p]"
     out_root = tmp_path / "out"

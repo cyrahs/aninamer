@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from aninamer.chinese_variants import to_traditional_chinese
+
 _BRACKET_PATTERNS = (
     re.compile(r"\[[^\[\]]*\]"),
     re.compile(r"\([^()]*\)"),
@@ -51,6 +53,9 @@ _SEASON_PATTERNS = (
     re.compile(r"(?i)(?<!\w)\d{1,2}(?:st|nd|rd|th)\s*season(?!\w)"),
     re.compile(rf"\u7b2c\s*(?:\d+|[{_CHINESE_NUMERALS}]+)\s*\u5b63"),
 )
+_TRAILING_TITLE_SUFFIX_PATTERNS = (
+    re.compile(r"(?i)\s+the\s+animation\s*$"),
+)
 _TMDB_TAG_PATTERN = re.compile(r"\{\s*tmdb-([^{}]+)\s*\}", re.IGNORECASE)
 
 
@@ -75,6 +80,18 @@ def _strip_season_markers(text: str) -> str:
     for pattern in _SEASON_PATTERNS:
         text = pattern.sub(" ", text)
     return text
+
+
+def _strip_trailing_title_suffixes(text: str) -> str:
+    for pattern in _TRAILING_TITLE_SUFFIX_PATTERNS:
+        text = pattern.sub(" ", text)
+    return text
+
+
+def _append_if_changed(values: list[str], value: str) -> None:
+    value = value.strip()
+    if value and (not values or value != values[-1]):
+        values.append(value)
 
 
 def clean_tmdb_query(name: str) -> str:
@@ -106,6 +123,13 @@ def build_tmdb_query_variants(name: str, *, max_variants: int = 6) -> list[str]:
     cleaned = clean_tmdb_query(name)
     if cleaned:
         variants.append(cleaned)
+        _append_if_changed(variants, to_traditional_chinese(cleaned))
+        stripped_suffix = _normalize_whitespace(
+            _strip_trailing_title_suffixes(cleaned)
+        ).strip()
+        if stripped_suffix != cleaned:
+            _append_if_changed(variants, stripped_suffix)
+            _append_if_changed(variants, to_traditional_chinese(stripped_suffix))
 
     words = cleaned.split()
     for count in (8, 6, 4, 2):
