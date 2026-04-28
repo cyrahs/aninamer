@@ -1,22 +1,25 @@
-FROM python:3.13-slim
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
 
 WORKDIR /app
 
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --frozen --no-dev --no-install-project
+
+FROM python:3.13-slim-bookworm AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    PATH="/app/.venv/bin:$PATH"
+
+WORKDIR /app
+
+COPY --from=builder /app/.venv /app/.venv
 COPY aninamer ./aninamer
 COPY config.toml.example ./config.toml.example
-COPY pyproject.toml ./pyproject.toml
-COPY README.md ./README.md
-
-RUN pip install --no-cache-dir \
-    "fastapi>=0.116.0" \
-    "httpx>=0.28.1" \
-    "opencc-python-reimplemented>=0.1.7" \
-    "pydantic>=2.11.7" \
-    'psycopg[binary]>=3.2.9' \
-    "uvicorn>=0.35.0"
 
 ENTRYPOINT ["python", "-m", "aninamer"]
