@@ -7,11 +7,12 @@ from pathlib import Path
 import threading
 from typing import Sequence
 
-from aninamer.artifacts import rename_plan_from_payload
+from aninamer.artifacts import rename_plan_from_payload, rename_plan_to_payload
 from aninamer.config import WatchRootConfig, WorkerConfig
 from aninamer.errors import ApplyError
 from aninamer.llm_client import ChatMessage
 from aninamer.monitoring import SeriesDiscoveryResult
+from aninamer.plan import RenamePlan
 from aninamer.store import RuntimeStore
 from aninamer.tmdb_client import SeasonDetails, SeasonSummary, TvDetails
 from aninamer.worker import AninamerWorker
@@ -254,6 +255,112 @@ def test_worker_scan_creates_planned_job_and_persists_plan_artifact(
     assert runtime_store.load_artifact(job.id, "result") is None
     assert runtime_store.load_artifact(job.id, "rollback") is None
     assert runtime_store.list_notifications_after(0) == []
+
+
+def test_worker_empty_plan_fails_without_archive_when_auto_apply_enabled(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
+    config = replace(
+        app_config,
+        worker=replace(app_config.worker, auto_apply=True),
+    )
+    series_dir = config.watch_roots[0].input_root / "ShowA {tmdb-123}"
+    _write(series_dir / "ep1.mkv", b"video")
+
+    worker = AninamerWorker(
+        config,
+        runtime_store,
+        tmdb_client_factory=lambda: FakeTMDBClient(),
+        llm_for_mapping_factory=lambda: FakeLLM('{"tmdb":123,"eps":[]}'),
+    )
+
+    worker.scan_once()
+
+    job = runtime_store.list_jobs()[0]
+    assert job.status == "failed"
+    assert job.error_stage == "plan"
+    assert job.error_message is not None
+    assert "rename plan contains no moves" in job.error_message
+    assert job.fail_path is not None
+    fail_path = Path(job.fail_path)
+    assert fail_path.parent.name == "fail"
+    assert (fail_path / "ep1.mkv").exists()
+    assert not series_dir.exists()
+    assert not (
+        config.watch_roots[0].input_root / "archive" / "ShowA {tmdb-123}"
+    ).exists()
+
+    plan_payload = runtime_store.load_artifact(job.id, "plan")
+    assert plan_payload is not None
+    plan = rename_plan_from_payload(plan_payload)
+    assert plan.moves == ()
+    assert runtime_store.load_artifact(job.id, "result") is None
+    assert runtime_store.load_artifact(job.id, "rollback") is None
+
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == ["job_plan_failed"]
+    assert notifications[0].severity == "error"
+    assert notifications[0].title == "Aninamer: 测试动画"
+    assert notifications[0].message == "生成计划失败：归档计划为空"
+
+
+def test_worker_rejects_legacy_empty_plan_at_apply_boundary(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
+    series_dir = app_config.watch_roots[0].input_root / "ShowA {tmdb-123}"
+    _write(series_dir / "ep1.mkv", b"video")
+    job = runtime_store.create_job(
+        series_name="测试动画",
+        watch_root_key="downloads",
+        source_kind="monitor",
+        series_dir=series_dir,
+        output_root=app_config.watch_roots[0].output_root,
+    )
+    plan = RenamePlan(
+        tmdb_id=123,
+        series_name_zh_cn="测试动画",
+        year=2020,
+        series_dir=series_dir,
+        output_root=app_config.watch_roots[0].output_root,
+        moves=(),
+    )
+    runtime_store.save_artifact(job.id, "plan", rename_plan_to_payload(plan))
+    runtime_store.update_job(
+        job.id,
+        status="apply_requested",
+        series_name="测试动画",
+        tmdb_id=123,
+    )
+
+    worker = AninamerWorker(
+        app_config,
+        runtime_store,
+        tmdb_client_factory=lambda: FakeTMDBClient(),
+    )
+
+    worker.scan_once()
+
+    updated = runtime_store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == "failed"
+    assert updated.error_stage == "apply"
+    assert updated.error_message is not None
+    assert "rename plan contains no moves" in updated.error_message
+    assert updated.fail_path is not None
+    fail_path = Path(updated.fail_path)
+    assert fail_path.parent.name == "fail"
+    assert (fail_path / "ep1.mkv").exists()
+    assert not (
+        app_config.watch_roots[0].input_root / "archive" / "ShowA {tmdb-123}"
+    ).exists()
+    assert runtime_store.load_artifact(job.id, "result") is None
+    assert runtime_store.load_artifact(job.id, "rollback") is None
+
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == ["job_apply_failed"]
+    assert notifications[0].message == "归档失败：归档计划为空"
 
 
 def test_worker_apply_request_writes_result_and_rollback_artifacts(

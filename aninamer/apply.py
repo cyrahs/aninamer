@@ -242,6 +242,8 @@ def apply_rename_plan(
         two_stage,
         len(plan.moves),
     )
+    if not plan.moves:
+        raise ApplyError("rename plan contains no moves")
 
     output_root = _resolve_path(plan.output_root)
     sources_set = {_resolve_path(move.src) for move in plan.moves}

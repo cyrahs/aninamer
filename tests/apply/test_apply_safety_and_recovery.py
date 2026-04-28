@@ -70,6 +70,21 @@ def test_apply_dry_run_does_not_touch_fs(tmp_path: Path) -> None:
     assert not output_root.exists()
 
 
+def test_apply_rejects_empty_plan_without_touching_fs(tmp_path: Path) -> None:
+    series_dir = tmp_path / "series"
+    series_dir.mkdir()
+    leftover = series_dir / "leftover.mkv"
+    leftover.write_bytes(b"video")
+    output_root = tmp_path / "out"
+    plan = _plan(series_dir, output_root, ())
+
+    with pytest.raises(ApplyError, match="rename plan contains no moves"):
+        apply_rename_plan(plan, dry_run=False)
+
+    assert leftover.exists()
+    assert not output_root.exists()
+
+
 def test_apply_swaps_files_with_staging(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()

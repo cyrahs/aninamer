@@ -15,7 +15,7 @@ from aninamer.artifacts import (
     rename_result_to_payload,
 )
 from aninamer.config import AppConfig, WatchRootConfig
-from aninamer.errors import NotificationDeliveryError
+from aninamer.errors import NotificationDeliveryError, PlanValidationError
 from aninamer.llm_client import LLMClient
 from aninamer.monitoring import (
     MonitorTarget,
@@ -451,6 +451,8 @@ class AninamerWorker:
             )
             self._store.save_artifact(job.id, "plan", rename_plan_to_payload(plan))
             video_count, subtitle_count = _count_moves(plan)
+            if video_count + subtitle_count == 0:
+                raise PlanValidationError("rename plan contains no moves")
             updated_job = self._store.update_job(
                 job.id,
                 status="apply_requested" if self._config.worker.auto_apply else "planned",
@@ -1041,6 +1043,8 @@ def _notification_failure_reason(error_message: str | None) -> str:
         return "无法创建临时目录"
     if "plan artifact missing" in lowered:
         return "缺少归档计划"
+    if "rename plan contains no moves" in lowered:
+        return "归档计划为空"
     if "no tmdb results" in lowered:
         return "TMDB 未找到匹配条目"
     if "tmdb request failed" in lowered or "network error" in lowered:
