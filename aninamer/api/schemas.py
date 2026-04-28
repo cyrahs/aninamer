@@ -54,6 +54,7 @@ class JobResponse(ApiSchema):
         "applying",
         "succeeded",
         "failed",
+        "cleared",
     ]
     tmdb_id: int | None = None
     video_moves_count: int

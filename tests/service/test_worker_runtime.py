@@ -350,6 +350,40 @@ def test_worker_failed_job_is_persisted_for_restart(
     assert "fail" not in notifications[0].message.casefold()
 
 
+def test_worker_clears_failed_job_after_fail_path_is_removed(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
+    series_dir = app_config.watch_roots[0].input_root / "ShowA"
+    fail_path = app_config.watch_roots[0].input_root / "fail" / "ShowA"
+    fail_path.mkdir(parents=True)
+    job = runtime_store.create_job(
+        series_name="ShowA",
+        watch_root_key="downloads",
+        source_kind="monitor",
+        series_dir=series_dir,
+        output_root=app_config.watch_roots[0].output_root,
+    )
+    runtime_store.update_job(
+        job.id,
+        status="failed",
+        error_stage="plan",
+        error_message="LLMOutputError: invalid json",
+        fail_path=str(fail_path),
+    )
+    fail_path.rmdir()
+
+    worker = AninamerWorker(app_config, runtime_store)
+    worker.scan_once()
+
+    updated = runtime_store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == "cleared"
+    assert updated.fail_path is None
+    assert updated.error_stage == "plan"
+    assert updated.error_message == "LLMOutputError: invalid json"
+
+
 def test_worker_rejected_request_creates_notification(
     app_config,
     runtime_store: RuntimeStore,

@@ -201,6 +201,47 @@ def test_jobs_endpoint_hides_internal_artifacts_and_status_endpoint_aggregates(
         )
 
 
+def test_status_endpoint_ignores_cleared_jobs(
+    app_config,
+    runtime_store: RuntimeStore,
+    tmp_path,
+) -> None:
+    worker = AninamerWorker(app_config, runtime_store)
+    job = runtime_store.create_job(
+        series_name="ShowA",
+        watch_root_key="downloads",
+        source_kind="monitor",
+        series_dir=tmp_path / "input" / "ShowA",
+        output_root=tmp_path / "output",
+    )
+    runtime_store.update_job(
+        job.id,
+        status="cleared",
+        error_stage="plan",
+        error_message="LLMOutputError: invalid json",
+    )
+
+    app = create_app(app_config, store=runtime_store, worker=worker)
+    with TestClient(app) as client:
+        jobs_response = client.get("/api/v1/jobs", headers=_auth_headers())
+        assert jobs_response.status_code == 200
+        assert jobs_response.json()["items"][0]["status"] == "cleared"
+
+        status_response = client.get("/api/v1/status", headers=_auth_headers())
+        assert status_response.status_code == 200
+        status_payload = status_response.json()
+        assert status_payload["summary"] == {
+            "pending_count": 0,
+            "planning_count": 0,
+            "planned_count": 0,
+            "apply_requested_count": 0,
+            "applying_count": 0,
+            "failed_count": 0,
+        }
+        assert status_payload["pending_items"] == []
+        assert status_payload["failed_items"] == []
+
+
 def test_job_requests_round_trip_through_api(app_config, runtime_store: RuntimeStore, tmp_path) -> None:
     worker = AninamerWorker(app_config, runtime_store)
     job = runtime_store.create_job(

@@ -197,6 +197,7 @@ class AninamerWorker:
     def scan_once(self) -> None:
         self._deliver_due_notifications()
         self._process_job_requests()
+        self._clear_missing_failed_jobs()
         self._discover_new_jobs()
         self._process_jobs()
         self._store.set_last_scan_at()
@@ -377,6 +378,29 @@ class AninamerWorker:
                     series_dir=series_dir,
                     output_root=target.output_root,
                 )
+
+    def _clear_missing_failed_jobs(self) -> None:
+        for job in self._store.list_jobs():
+            if job.status != "failed" or job.fail_path is None:
+                continue
+            fail_path = Path(job.fail_path)
+            try:
+                still_in_fail_bucket = path_is_dir(fail_path)
+            except OSError:
+                logger.warning(
+                    "worker: failed_job_fail_path_unavailable job_id=%s fail_path=%s",
+                    job.id,
+                    fail_path,
+                )
+                continue
+            if still_in_fail_bucket:
+                continue
+            logger.info(
+                "worker: failed_job_cleared job_id=%s fail_path=%s",
+                job.id,
+                fail_path,
+            )
+            self._store.update_job(job.id, status="cleared", fail_path=None)
 
     def _process_jobs(self) -> None:
         for job in self._store.list_jobs():

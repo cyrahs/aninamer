@@ -20,6 +20,7 @@ JobStatus = Literal[
     "applying",
     "succeeded",
     "failed",
+    "cleared",
 ]
 JobRequestKind = Literal["scan_now", "apply_job"]
 JobRequestStatus = Literal["pending", "running", "succeeded", "failed", "rejected"]
@@ -170,7 +171,8 @@ class RuntimeStore:
                                     'apply_requested',
                                     'applying',
                                     'succeeded',
-                                    'failed'
+                                    'failed',
+                                    'cleared'
                                 )
                             ),
                         tmdb_id INTEGER NULL,
@@ -189,6 +191,43 @@ class RuntimeStore:
                         archive_path TEXT NULL,
                         fail_path TEXT NULL
                     )
+                    """
+                )
+                cur.execute(
+                    """
+                    DO $$
+                    DECLARE
+                        constraint_name TEXT;
+                    BEGIN
+                        FOR constraint_name IN
+                            SELECT conname
+                            FROM pg_constraint
+                            WHERE conrelid = 'jobs'::regclass
+                              AND contype = 'c'
+                              AND pg_get_constraintdef(oid) ILIKE '%status%'
+                        LOOP
+                            EXECUTE format(
+                                'ALTER TABLE jobs DROP CONSTRAINT %I',
+                                constraint_name
+                            );
+                        END LOOP;
+                        EXECUTE $sql$
+                            ALTER TABLE jobs
+                            ADD CONSTRAINT jobs_status_check
+                            CHECK (
+                                status IN (
+                                    'pending',
+                                    'planning',
+                                    'planned',
+                                    'apply_requested',
+                                    'applying',
+                                    'succeeded',
+                                    'failed',
+                                    'cleared'
+                                )
+                            )
+                        $sql$;
+                    END $$;
                     """
                 )
                 cur.execute(
