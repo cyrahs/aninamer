@@ -9,6 +9,7 @@ from aninamer.tmdb_resolve import resolve_tmdb_tv_id_with_llm
 
 
 @pytest.mark.integration
+@pytest.mark.llm_smoke
 def test_resolve_tmdb_id_with_real_llm_smoke(
     integration_openai_settings: OpenAISettings,
 ) -> None:
@@ -40,6 +41,7 @@ def test_resolve_tmdb_id_with_real_llm_smoke(
 
 
 @pytest.mark.integration
+@pytest.mark.llm_eval
 def test_resolve_tmdb_id_charlotte(
     integration_openai_settings: OpenAISettings,
 ) -> None:
