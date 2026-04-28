@@ -14,6 +14,7 @@ COPY README.md ./README.md
 RUN pip install --no-cache-dir \
     "fastapi>=0.116.0" \
     "httpx>=0.28.1" \
+    "opencc-python-reimplemented>=0.1.7" \
     "pydantic>=2.11.7" \
     'psycopg[binary]>=3.2.9' \
     "uvicorn>=0.35.0"
