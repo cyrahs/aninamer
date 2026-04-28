@@ -60,6 +60,7 @@ class CaptureWebhookTransport:
         self.response = response or WebhookResponse(status=200, body=b"ok", headers={})
         self.error = error
         self.calls = 0
+        self.bodies: list[bytes] = []
         self.last_url: str | None = None
         self.last_body: bytes | None = None
         self.last_headers: dict[str, str] | None = None
@@ -75,6 +76,7 @@ class CaptureWebhookTransport:
         self.calls += 1
         self.last_url = url
         self.last_body = body
+        self.bodies.append(body)
         self.last_headers = headers
         self.last_timeout = timeout
         if self.error is not None:
@@ -671,7 +673,40 @@ def test_worker_delivers_webhook_notifications_when_enabled(
         "image_url": "",
         "disable_web_page_preview": True,
         "disable_notification": False,
+        "pin": True,
     }
+
+
+def test_worker_does_not_pin_non_error_webhook_notifications(
+    app_config_with_notifications,
+    runtime_store: RuntimeStore,
+) -> None:
+    transport = CaptureWebhookTransport()
+    runtime_store.create_notification(
+        event_kind="job_apply_succeeded",
+        severity="success",
+        title="处理完成",
+        message="ShowA 已处理完成",
+        markdown="# 处理完成",
+    )
+    runtime_store.create_notification(
+        event_kind="job_apply_succeeded",
+        severity="warning",
+        title="处理完成",
+        message="ShowB 已处理完成",
+        markdown="# 处理完成",
+    )
+    worker = AninamerWorker(
+        app_config_with_notifications,
+        runtime_store,
+        webhook_transport=transport,
+    )
+
+    worker.scan_once()
+
+    assert transport.calls == 2
+    bodies = [json.loads(body.decode("utf-8")) for body in transport.bodies]
+    assert [body["pin"] for body in bodies] == [False, False]
 
 
 def test_worker_retries_failed_webhook_delivery(
@@ -707,3 +742,4 @@ def test_worker_retries_failed_webhook_delivery(
     assert retried.next_attempt_at is not None
     body = json.loads((transport.last_body or b"{}").decode("utf-8"))
     assert body["image_url"] == "https://image.tmdb.org/t/p/original/poster.jpg"
+    assert body["pin"] is True

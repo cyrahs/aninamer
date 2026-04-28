@@ -50,7 +50,7 @@ Request headers:
 Webhook body is fixed:
 
 ```json
-{"markdown":"...","disable_web_page_preview":true,"disable_notification":false}
+{"markdown":"...","image_url":"","disable_web_page_preview":true,"disable_notification":false,"pin":false}
 ```
 
 If `[notifications]` is missing or incomplete, service startup still succeeds and notifications

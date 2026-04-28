@@ -620,6 +620,7 @@ class AninamerWorker:
                     image_url=notification.image_url,
                     disable_web_page_preview=notification.disable_web_page_preview,
                     disable_notification=notification.disable_notification,
+                    pin=notification.severity == "error",
                     transport=self._webhook_transport,
                 )
                 if 200 <= response.status < 300:

@@ -43,6 +43,7 @@ def test_send_notification_webhook_uses_exact_contract() -> None:
         image_url="https://image.tmdb.org/t/p/original/poster.jpg",
         disable_web_page_preview=True,
         disable_notification=False,
+        pin=True,
         transport=transport,
     )
 
@@ -58,4 +59,5 @@ def test_send_notification_webhook_uses_exact_contract() -> None:
         "image_url": "https://image.tmdb.org/t/p/original/poster.jpg",
         "disable_web_page_preview": True,
         "disable_notification": False,
+        "pin": True,
     }

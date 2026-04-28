@@ -55,6 +55,7 @@ def send_notification_webhook(
     image_url: str,
     disable_web_page_preview: bool,
     disable_notification: bool,
+    pin: bool = False,
     transport: WebhookTransport | None = None,
 ) -> WebhookResponse:
     payload = {
@@ -62,6 +63,7 @@ def send_notification_webhook(
         "image_url": image_url,
         "disable_web_page_preview": disable_web_page_preview,
         "disable_notification": disable_notification,
+        "pin": pin,
     }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {
