@@ -246,6 +246,7 @@ def test_worker_scan_creates_planned_job_and_persists_plan_artifact(
     assert len(jobs) == 1
     job = jobs[0]
     assert job.status == "planned"
+    assert job.series_name == "测试动画"
     assert job.tmdb_id == 123
     assert job.video_moves_count == 1
     assert job.subtitle_moves_count == 1
@@ -297,9 +298,15 @@ def test_worker_apply_request_writes_result_and_rollback_artifacts(
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_apply_succeeded"]
     assert notifications[0].severity == "warning"
-    assert notifications[0].title == "处理完成"
-    assert notifications[0].message == "已完成处理，源目录已清理"
-    assert notifications[0].markdown == "处理完成\n\n《ShowA》\n已完成处理，源目录已清理"
+    assert notifications[0].title == "Aninamer: 测试动画"
+    assert notifications[0].message == "S01E01 | 视频: 1 | 字幕: 1"
+    notification_lines = notifications[0].markdown.splitlines()
+    assert notification_lines[:2] == [
+        r"*Aninamer: 测试动画*",
+        r"S01E01 \| 视频: 1 \| 字幕: 1",
+    ]
+    assert len(notification_lines) == 3
+    assert "测试动画" in notification_lines[2]
     assert notifications[0].payload == {"finalize_status": "deleted"}
     assert notifications[0].delivery_status == "disabled"
 
@@ -336,8 +343,8 @@ def test_worker_failed_job_is_persisted_for_restart(
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_plan_failed"]
     assert notifications[0].severity == "error"
-    assert notifications[0].title == "归档失败"
-    assert notifications[0].message == "生成归档计划失败"
+    assert notifications[0].title == "Aninamer: ShowA {tmdb-123}"
+    assert notifications[0].message == "生成计划失败：LLM 映射集数超出 TMDB 范围"
     assert notifications[0].payload["error_stage"] == "plan"
     assert notifications[0].delivery_status == "disabled"
     assert "fail" not in notifications[0].message.casefold()
@@ -366,13 +373,14 @@ def test_worker_rejected_request_creates_notification(
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_request_rejected"]
     assert notifications[0].severity == "error"
-    assert notifications[0].title == "归档失败"
-    assert notifications[0].message == "归档请求被拒绝"
-    assert notifications[0].markdown == "归档失败\n\n《ShowA》\n归档请求被拒绝"
+    assert notifications[0].title == "Aninamer: ShowA"
+    assert notifications[0].message == "请求被拒绝：任务状态不允许归档"
+    assert notifications[0].markdown == "*Aninamer: ShowA*\n请求被拒绝：任务状态不允许归档"
     assert notifications[0].job_request_id == request.id
     assert notifications[0].payload == {
         "request_action": "apply_job",
         "job_id": job.id,
+        "error_message": "job is not in planned status",
     }
     assert notifications[0].delivery_status == "disabled"
 
@@ -406,8 +414,8 @@ def test_worker_request_failure_creates_notification(
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_request_failed"]
     assert notifications[0].severity == "error"
-    assert notifications[0].title == "归档失败"
-    assert notifications[0].message == "处理归档请求失败"
+    assert notifications[0].title == "Aninamer: 归档任务"
+    assert notifications[0].message == "请求失败：boom"
     assert notifications[0].job_request_id == request.id
     assert notifications[0].delivery_status == "disabled"
 
@@ -435,8 +443,8 @@ def test_worker_recover_emits_apply_failed_notification(
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_apply_failed"]
     assert notifications[0].severity == "error"
-    assert notifications[0].title == "归档失败"
-    assert notifications[0].message == "执行归档失败"
+    assert notifications[0].title == "Aninamer: ShowA"
+    assert notifications[0].message == "归档失败：Worker 重启，归档中断"
     assert notifications[0].payload["error_stage"] == "apply"
     assert notifications[0].delivery_status == "disabled"
 
@@ -478,8 +486,8 @@ def test_worker_apply_failure_creates_notification(
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_apply_failed"]
     assert notifications[0].severity == "error"
-    assert notifications[0].title == "归档失败"
-    assert notifications[0].message == "执行归档失败"
+    assert notifications[0].title == "Aninamer: 测试动画"
+    assert notifications[0].message == "归档失败：目标文件已存在"
     assert notifications[0].payload["error_stage"] == "apply"
     assert notifications[0].delivery_status == "disabled"
 

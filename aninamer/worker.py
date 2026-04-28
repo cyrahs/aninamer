@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import re
 import threading
 import time
 from typing import Callable, Literal
@@ -49,6 +50,10 @@ logger = logging.getLogger(__name__)
 MAX_NOTIFICATION_BATCH = 100
 MAX_NOTIFICATION_BACKOFF_SECONDS = 300
 _TELEGRAM_MARKDOWN_V2_SPECIALS = frozenset("\\_*[]()~`>#+-=|{}.!")
+_EPISODE_TOKEN_RE = re.compile(
+    r"\bS(?P<season>\d{2})E(?P<start>\d{2})(?:-E(?P<end>\d{2}))?\b"
+)
+_MAX_NOTIFICATION_EPISODE_SEGMENTS = 4
 
 
 @dataclass(frozen=True)
@@ -425,6 +430,7 @@ class AninamerWorker:
             updated_job = self._store.update_job(
                 job.id,
                 status="apply_requested" if self._config.worker.auto_apply else "planned",
+                series_name=plan.series_name_zh_cn,
                 tmdb_id=plan.tmdb_id,
                 video_moves_count=video_count,
                 subtitle_moves_count=subtitle_count,
@@ -676,18 +682,34 @@ class AninamerWorker:
         job_request_id: int | None = None,
         payload: dict[str, object] | None = None,
     ) -> NotificationRecord:
-        job = self._store.get_job(job_id) if job_id is not None else None
-        job_request = (
-            self._store.get_job_request(job_request_id)
-            if job_request_id is not None
-            else None
-        )
+        job: JobRecord | None = None
+        if job_id is not None:
+            try:
+                job = self._store.get_job(job_id)
+            except Exception as exc:
+                logger.warning(
+                    "worker: notification_job_lookup_failed job_id=%s error=%s",
+                    job_id,
+                    exc,
+                )
+        job_request: JobRequestRecord | None = None
+        if job_request_id is not None:
+            try:
+                job_request = self._store.get_job_request(job_request_id)
+            except Exception as exc:
+                logger.warning(
+                    "worker: notification_job_request_lookup_failed job_request_id=%s error=%s",
+                    job_request_id,
+                    exc,
+                )
         resolved_payload = payload or {}
+        plan = self._load_notification_plan(job)
         presentation = _build_notification_presentation(
             event_kind=event_kind,
             job=job,
             job_request=job_request,
             payload=resolved_payload,
+            plan=plan,
         )
         image_url = self._notification_image_url(job)
         return self._store.create_notification(
@@ -704,6 +726,22 @@ class AninamerWorker:
                 "pending" if self._config.notifications is not None else "disabled"
             ),
         )
+
+    def _load_notification_plan(self, job: JobRecord | None) -> RenamePlan | None:
+        if job is None:
+            return None
+        payload = self._store.load_artifact(job.id, "plan")
+        if payload is None:
+            return None
+        try:
+            return rename_plan_from_payload(payload)
+        except Exception as exc:
+            logger.warning(
+                "worker: notification_plan_load_failed job_id=%s error=%s",
+                job.id,
+                exc,
+            )
+            return None
 
     def _notification_image_url(self, job: JobRecord | None) -> str:
         if job is None or job.tmdb_id is None:
@@ -793,43 +831,44 @@ def _build_notification_presentation(
     job: JobRecord | None,
     job_request: JobRequestRecord | None,
     payload: dict[str, object],
+    plan: RenamePlan | None = None,
 ) -> NotificationPresentation:
-    del job_request
-    subject = _notification_subject(job)
+    subject = _notification_subject(job, plan)
+    title = f"Aninamer: {subject}"
+    archive_directory: str | None = None
 
     if event_kind == "job_apply_succeeded":
         finalize_status = payload.get("finalize_status")
+        message = _archive_summary_from_plan(plan)
+        archive_directory = _archive_directory_from_plan(plan)
         if finalize_status == "archived":
-            title = "归档成功"
-            message = "已归档完成"
             severity = "success"
         elif finalize_status == "deleted":
-            title = "处理完成"
-            message = "已完成处理，源目录已清理"
             severity = "warning"
         else:
-            title = "处理完成"
-            message = "已完成处理，未执行归档"
             severity = "warning"
     elif event_kind == "job_plan_failed":
-        title = "归档失败"
-        message = "生成归档计划失败"
+        reason = _notification_failure_reason(_job_error_message(job, payload))
+        message = f"生成计划失败：{reason}"
         severity = "error"
     elif event_kind == "job_apply_failed":
-        title = "归档失败"
-        message = "执行归档失败"
+        reason = _notification_failure_reason(_job_error_message(job, payload))
+        message = f"归档失败：{reason}"
         severity = "error"
     elif event_kind == "job_request_rejected":
-        title = "归档失败"
-        message = "归档请求被拒绝"
+        reason = _notification_failure_reason(
+            _job_request_error_message(job_request, payload)
+        )
+        message = f"请求被拒绝：{reason}"
         severity = "error"
     elif event_kind == "job_request_failed":
-        title = "归档失败"
-        message = "处理归档请求失败"
+        reason = _notification_failure_reason(
+            _job_request_error_message(job_request, payload)
+        )
+        message = f"请求失败：{reason}"
         severity = "error"
     else:
-        title = "归档失败"
-        message = "归档任务失败"
+        message = "归档失败：未知错误"
         severity = "error"
 
     return NotificationPresentation(
@@ -838,32 +877,194 @@ def _build_notification_presentation(
         message=message,
         markdown=_render_notification_markdown(
             title=title,
-            subject=subject,
             message=message,
+            archive_directory=archive_directory,
         ),
     )
 
 
-def _notification_subject(job: JobRecord | None) -> str:
+def _notification_subject(job: JobRecord | None, plan: RenamePlan | None = None) -> str:
+    if plan is not None:
+        title = plan.series_name_zh_cn.strip()
+        if title:
+            return title
     if job is None:
         return "归档任务"
-    return f"《{job.series_name}》"
+    title = job.series_name.strip()
+    return title or "归档任务"
+
+
+def _archive_summary_from_plan(plan: RenamePlan | None) -> str:
+    episode_summary = _episode_summary_from_plan(plan)
+    video_count = 0
+    subtitle_count = 0
+    if plan is not None:
+        video_count, subtitle_count = _count_moves(plan)
+    return f"{episode_summary} | 视频: {video_count} | 字幕: {subtitle_count}"
+
+
+def _archive_directory_from_plan(plan: RenamePlan | None) -> str:
+    if plan is None:
+        return "未知"
+
+    output_root = plan.output_root
+    for move in plan.moves:
+        dst = move.dst
+        if not dst.is_relative_to(output_root):
+            continue
+        rel_parts = dst.relative_to(output_root).parts
+        if rel_parts:
+            return str(output_root / rel_parts[0])
+    return str(output_root)
+
+
+def _episode_summary_from_plan(plan: RenamePlan | None) -> str:
+    if plan is None:
+        return "归档完成"
+    ranges = _episode_ranges_from_plan(plan)
+    if not ranges:
+        return "归档完成"
+
+    formatted = [_format_episode_range(*item) for item in ranges]
+    if len(formatted) <= _MAX_NOTIFICATION_EPISODE_SEGMENTS:
+        return ", ".join(formatted)
+
+    episode_count = sum((end - start + 1) for _season, start, end in ranges)
+    visible = ", ".join(formatted[:_MAX_NOTIFICATION_EPISODE_SEGMENTS])
+    return f"{visible} 等{episode_count}集"
+
+
+def _episode_ranges_from_plan(plan: RenamePlan) -> tuple[tuple[int, int, int], ...]:
+    ranges: list[tuple[int, int, int]] = []
+    for move in plan.moves:
+        if move.kind != "video":
+            continue
+        matches = list(_EPISODE_TOKEN_RE.finditer(move.dst.stem))
+        if not matches:
+            continue
+        match = matches[-1]
+        season = int(match.group("season"))
+        start = int(match.group("start"))
+        end_text = match.group("end")
+        end = int(end_text) if end_text is not None else start
+        ranges.append((season, start, end))
+
+    if not ranges:
+        return ()
+
+    merged: list[tuple[int, int, int]] = []
+    for season, start, end in sorted(ranges):
+        if not merged:
+            merged.append((season, start, end))
+            continue
+        last_season, last_start, last_end = merged[-1]
+        if season == last_season and start <= last_end + 1:
+            merged[-1] = (last_season, last_start, max(last_end, end))
+            continue
+        merged.append((season, start, end))
+    return tuple(merged)
+
+
+def _format_episode_range(season: int, start: int, end: int) -> str:
+    prefix = f"S{season:02d}"
+    if start == end:
+        return f"{prefix}E{start:02d}"
+    return f"{prefix}E{start:02d}-{prefix}E{end:02d}"
+
+
+def _job_error_message(job: JobRecord | None, payload: dict[str, object]) -> str | None:
+    if job is not None:
+        return job.error_message
+    value = payload.get("error_message")
+    return value if isinstance(value, str) else None
+
+
+def _job_request_error_message(
+    job_request: JobRequestRecord | None,
+    payload: dict[str, object],
+) -> str | None:
+    if job_request is not None:
+        return job_request.error_message
+    value = payload.get("error_message")
+    return value if isinstance(value, str) else None
+
+
+def _notification_failure_reason(error_message: str | None) -> str:
+    if error_message is None or not error_message.strip():
+        return "未知错误"
+
+    text = " ".join(error_message.strip().split())
+    lowered = text.casefold()
+    if "worker restarted during apply" in lowered:
+        return "Worker 重启，归档中断"
+    if "destination already exists" in lowered:
+        return "目标文件已存在"
+    if "destination collision" in lowered:
+        return "目标文件名冲突"
+    if "outside output_root" in lowered:
+        return "目标路径越界"
+    if "source" in lowered and (
+        "does not exist" in lowered or "not a file" in lowered
+    ):
+        return "源文件不存在"
+    if "destination parent" in lowered and "not a directory" in lowered:
+        return "目标父路径不是目录"
+    if "cycle detected" in lowered:
+        return "重命名计划存在循环"
+    if "failed to create output_root" in lowered:
+        return "无法创建输出目录"
+    if "failed to create temp dir" in lowered:
+        return "无法创建临时目录"
+    if "plan artifact missing" in lowered:
+        return "缺少归档计划"
+    if "no tmdb results" in lowered:
+        return "TMDB 未找到匹配条目"
+    if "tmdb request failed" in lowered or "network error" in lowered:
+        return "TMDB 请求失败"
+    if "episode range" in lowered and "exceeds season" in lowered:
+        return "LLM 映射集数超出 TMDB 范围"
+    if "already exists in destination inventory" in lowered:
+        return "目标剧集已存在"
+    if "episode overlap" in lowered:
+        return "LLM 映射集数重复"
+    if "not in video ids" in lowered or "not in subtitle ids" in lowered:
+        return "LLM 映射引用了不存在的文件"
+    if "llmoutputerror" in lowered or "invalid json" in lowered:
+        return "LLM 输出格式无效"
+    if "openaierror" in lowered:
+        return "LLM 请求失败"
+    if "job not found" in lowered:
+        return "任务不存在"
+    if "job is not in planned status" in lowered:
+        return "任务状态不允许归档"
+    if "requires target_job_id" in lowered:
+        return "请求缺少目标任务"
+    if "unsupported request kind" in lowered:
+        return "不支持的请求类型"
+
+    return _truncate_notification_text(text, max_length=120)
+
+
+def _truncate_notification_text(text: str, *, max_length: int) -> str:
+    if len(text) <= max_length:
+        return text
+    return f"{text[: max_length - 1]}…"
 
 
 def _render_notification_markdown(
     *,
     title: str,
-    subject: str,
     message: str,
+    archive_directory: str | None = None,
 ) -> str:
-    return "\n".join(
-        [
-            _escape_telegram_markdown_v2(title),
-            "",
-            _escape_telegram_markdown_v2(subject),
-            _escape_telegram_markdown_v2(message),
-        ]
-    )
+    escaped_title = _escape_telegram_markdown_v2(title)
+    lines = [
+        f"*{escaped_title}*",
+        _escape_telegram_markdown_v2(message),
+    ]
+    if archive_directory is not None:
+        lines.append(_escape_telegram_markdown_v2(archive_directory))
+    return "\n".join(lines)
 
 
 def _escape_telegram_markdown_v2(text: str) -> str:
