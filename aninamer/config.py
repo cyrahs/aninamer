@@ -45,6 +45,7 @@ class NotificationConfig:
 class WorkerConfig:
     settle_seconds: int = 30
     scan_interval_seconds: int = 60
+    health_stale_after_seconds: int = 300
     auto_apply: bool = False
     two_stage: bool = False
     max_candidates: int = 5
@@ -240,6 +241,10 @@ def load_config(path: Path | None = None) -> AppConfig:
         scan_interval_seconds=_require_non_negative_int(
             worker_data.get("scan_interval_seconds", 60),
             "worker.scan_interval_seconds",
+        ),
+        health_stale_after_seconds=_require_positive_int(
+            worker_data.get("health_stale_after_seconds", 300),
+            "worker.health_stale_after_seconds",
         ),
         auto_apply=_require_bool(worker_data.get("auto_apply", False), "worker.auto_apply"),
         two_stage=_require_bool(worker_data.get("two_stage", False), "worker.two_stage"),

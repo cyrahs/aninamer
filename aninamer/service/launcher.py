@@ -8,6 +8,7 @@ import uvicorn
 
 from aninamer.api import create_app
 from aninamer.config import AppConfig, load_config
+from aninamer.logging_utils import configure_logging
 from aninamer.store import RuntimeStore
 from aninamer.worker import AninamerWorker
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 def run_service(config: AppConfig | None = None) -> None:
     resolved = config or load_config()
+    configure_logging(log_path=resolved.log_path)
     legacy_store = resolved.log_path / "runtime" / "store.json"
     if legacy_store.exists():
         logger.warning("ignoring legacy runtime store file at %s", legacy_store)

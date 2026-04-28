@@ -28,6 +28,7 @@ port = 8091
 [worker]
 settle_seconds = 30
 scan_interval_seconds = 60
+health_stale_after_seconds = 300
 auto_apply = false
 two_stage = false
 max_candidates = 5

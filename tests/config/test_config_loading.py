@@ -42,6 +42,7 @@ token = "secret"
 [worker]
 settle_seconds = 10
 scan_interval_seconds = 5
+health_stale_after_seconds = 15
 auto_apply = true
 
 [[watch_roots]]
@@ -81,6 +82,7 @@ def test_load_config_parses_worker_and_watch_roots(tmp_path: Path) -> None:
     assert config.api.port == 8091
     assert config.worker.settle_seconds == 10
     assert config.worker.scan_interval_seconds == 5
+    assert config.worker.health_stale_after_seconds == 15
     assert config.worker.auto_apply is True
     assert len(config.watch_roots) == 1
     assert config.watch_roots[0].key == "downloads"

@@ -76,7 +76,11 @@ def scan_series_dir(series_dir: Path) -> ScanResult:
     video_items: list[tuple[str, str, int]] = []
     subtitle_items: list[tuple[str, str, int]] = []
 
-    for root, dirs, files in os.walk(series_dir, followlinks=False):
+    for root, dirs, files in os.walk(
+        series_dir,
+        followlinks=False,
+        onerror=_raise_walk_error,
+    ):
         dirs[:] = [name for name in dirs if name.casefold() not in SKIP_DIR_NAMES]
         root_path = Path(root)
         for name in files:
@@ -134,3 +138,7 @@ def scan_series_dir(series_dir: Path) -> ScanResult:
     )
 
     return ScanResult(series_dir=series_dir, videos=videos, subtitles=subtitles)
+
+
+def _raise_walk_error(exc: OSError) -> None:
+    raise exc

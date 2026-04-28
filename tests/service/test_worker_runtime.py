@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import errno
 import json
 from pathlib import Path
+import threading
 from typing import Sequence
 
 from aninamer.artifacts import rename_plan_from_payload
+from aninamer.config import WatchRootConfig, WorkerConfig
+from aninamer.errors import ApplyError
 from aninamer.llm_client import ChatMessage
+from aninamer.monitoring import SeriesDiscoveryResult
 from aninamer.store import RuntimeStore
 from aninamer.tmdb_client import SeasonDetails, SeasonSummary, TvDetails
 from aninamer.worker import AninamerWorker
@@ -78,6 +84,143 @@ class CaptureWebhookTransport:
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+
+
+def test_worker_discovery_is_isolated_per_watch_root(
+    app_config,
+    runtime_store: RuntimeStore,
+    monkeypatch,
+) -> None:
+    first_root = app_config.watch_roots[0]
+    second_root = WatchRootConfig(
+        key="hanime",
+        input_root=first_root.input_root.parent / "hanime_in",
+        output_root=first_root.output_root.parent / "hanime_out",
+    )
+    config = replace(app_config, watch_roots=(first_root, second_root))
+    discovered = second_root.input_root / "ShowB"
+
+    def fake_discover(input_root: Path) -> SeriesDiscoveryResult:
+        if input_root == first_root.input_root:
+            raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+        return SeriesDiscoveryResult(series_dirs=[discovered])
+
+    monkeypatch.setattr("aninamer.worker.discover_series_dirs_status", fake_discover)
+
+    worker = AninamerWorker(config, runtime_store)
+
+    worker.scan_once()
+
+    jobs = runtime_store.list_jobs()
+    assert len(jobs) == 1
+    assert jobs[0].watch_root_key == "hanime"
+    assert jobs[0].series_dir == str(discovered)
+
+
+def test_worker_run_forever_continues_after_scan_exception(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
+    shutdown = threading.Event()
+    config = replace(
+        app_config,
+        worker=WorkerConfig(
+            settle_seconds=0,
+            scan_interval_seconds=0,
+            health_stale_after_seconds=1,
+        ),
+    )
+
+    class FlakyWorker(AninamerWorker):
+        def __init__(self) -> None:
+            super().__init__(config, runtime_store)
+            self.calls = 0
+
+        def recover(self) -> None:
+            return None
+
+        def scan_once(self) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+            shutdown.set()
+
+    worker = FlakyWorker()
+
+    worker.run_forever(shutdown.is_set)
+
+    assert worker.calls == 2
+    health = worker.health_status()
+    assert health.running is False
+    assert health.last_error_message is not None
+    assert "Transport endpoint is not connected" in health.last_error_message
+
+
+def test_worker_transient_plan_error_is_retried_not_failed(
+    app_config,
+    runtime_store: RuntimeStore,
+    monkeypatch,
+) -> None:
+    series_dir = app_config.watch_roots[0].input_root / "ShowA {tmdb-123}"
+    _write(series_dir / "ep1.mkv", b"video")
+    job = runtime_store.create_job(
+        series_name="ShowA",
+        watch_root_key="downloads",
+        source_kind="monitor",
+        series_dir=series_dir,
+        output_root=app_config.watch_roots[0].output_root,
+    )
+
+    def broken_build(**_kwargs):  # noqa: ANN202
+        raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+
+    monkeypatch.setattr("aninamer.worker.build_rename_plan_for_series", broken_build)
+
+    worker = AninamerWorker(app_config, runtime_store)
+
+    worker.scan_once()
+
+    updated = runtime_store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == "pending"
+    assert updated.error_stage is None
+    assert updated.fail_path is None
+    assert runtime_store.list_notifications_after(0) == []
+
+
+def test_worker_transient_apply_error_is_retried_not_failed(
+    app_config,
+    runtime_store: RuntimeStore,
+    monkeypatch,
+) -> None:
+    series_dir = app_config.watch_roots[0].input_root / "ShowA {tmdb-123}"
+    _write(series_dir / "ep1.mkv", b"video")
+    worker = AninamerWorker(
+        app_config,
+        runtime_store,
+        tmdb_client_factory=lambda: FakeTMDBClient(),
+        llm_for_mapping_factory=lambda: FakeLLM(
+            '{"tmdb":123,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[]}]}'
+        ),
+    )
+    worker.scan_once()
+    job = runtime_store.list_jobs()[0]
+    runtime_store.update_job(job.id, status="apply_requested")
+
+    transient = OSError(errno.ENOTCONN, "Transport endpoint is not connected")
+
+    def broken_execute(*_args, **_kwargs):  # noqa: ANN202
+        raise ApplyError("apply failed") from transient
+
+    monkeypatch.setattr("aninamer.worker.execute_apply", broken_execute)
+
+    worker.scan_once()
+
+    updated = runtime_store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == "apply_requested"
+    assert updated.error_stage is None
+    assert updated.fail_path is None
 
 
 def test_worker_scan_creates_planned_job_and_persists_plan_artifact(

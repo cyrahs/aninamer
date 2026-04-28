@@ -19,8 +19,18 @@ class ErrorResponse(ApiSchema):
     error: ErrorDetail
 
 
+class HealthWorkerResponse(ApiSchema):
+    running: bool
+    last_scan_at: str | None = None
+    consecutive_failures: int = Field(ge=0)
+    stale_after_seconds: int = Field(gt=0)
+    unavailable_watch_root_count: int = Field(ge=0)
+
+
 class HealthResponse(ApiSchema):
-    status: Literal["ok"]
+    status: Literal["ok", "unhealthy"]
+    reason: str | None = None
+    worker: HealthWorkerResponse | None = None
 
 
 class RuntimeResponse(ApiSchema):

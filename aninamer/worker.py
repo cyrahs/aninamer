@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import threading
 import time
-from typing import Callable
+from typing import Callable, Literal
 
 from aninamer.artifacts import (
     rename_plan_from_payload,
@@ -17,10 +18,12 @@ from aninamer.errors import NotificationDeliveryError
 from aninamer.llm_client import LLMClient
 from aninamer.monitoring import (
     MonitorTarget,
-    discover_series_dirs,
+    discover_series_dirs_status,
     finalize_series_dir_after_apply,
     is_settled,
+    is_transient_filesystem_error,
     move_series_dir_to_fail,
+    path_is_dir,
     snapshot_series_files,
 )
 from aninamer.openai_llm_client import (
@@ -55,6 +58,23 @@ class WorkerRuntimeSummary:
     settle_seconds: int
     scan_interval_seconds: int
     watch_root_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorkerHealthStatus:
+    healthy: bool
+    reason: str | None
+    running: bool
+    started_at: str | None
+    stopped_at: str | None
+    current_scan_started_at: str | None
+    last_scan_at: str | None
+    last_success_at: str | None
+    last_error_at: str | None
+    last_error_message: str | None
+    consecutive_failures: int
+    stale_after_seconds: int
+    unavailable_watch_root_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -96,6 +116,16 @@ class AninamerWorker:
             )
             for item in config.watch_roots
         )
+        self._state_lock = threading.Lock()
+        self._running = False
+        self._started_at: str | None = None
+        self._stopped_at: str | None = None
+        self._current_scan_started_at: str | None = None
+        self._last_success_at: str | None = None
+        self._last_error_at: str | None = None
+        self._last_error_message: str | None = None
+        self._consecutive_failures = 0
+        self._watch_root_errors: dict[str, str] = {}
         if config.notifications is None and config.notifications_warning is not None:
             logger.warning(config.notifications_warning)
 
@@ -107,6 +137,51 @@ class AninamerWorker:
             settle_seconds=self._config.worker.settle_seconds,
             scan_interval_seconds=self._config.worker.scan_interval_seconds,
             watch_root_keys=tuple(item.key for item in self._targets),
+        )
+
+    def health_status(self) -> WorkerHealthStatus:
+        snapshot = self._store.snapshot()
+        with self._state_lock:
+            running = self._running
+            started_at = self._started_at
+            stopped_at = self._stopped_at
+            current_scan_started_at = self._current_scan_started_at
+            last_success_at = self._last_success_at
+            last_error_at = self._last_error_at
+            last_error_message = self._last_error_message
+            consecutive_failures = self._consecutive_failures
+            unavailable_watch_root_keys = tuple(sorted(self._watch_root_errors))
+
+        stale_after_seconds = self._config.worker.health_stale_after_seconds
+        reason: str | None = None
+        if not running:
+            reason = "worker has not started" if started_at is None else "worker is not running"
+        elif unavailable_watch_root_keys and len(unavailable_watch_root_keys) == len(
+            self._targets
+        ):
+            reason = "all watch roots are unavailable"
+        elif _is_stale(
+            snapshot.last_scan_at,
+            stale_after_seconds=stale_after_seconds,
+            now=datetime.now(timezone.utc),
+            fallback_started_at=current_scan_started_at or started_at,
+        ):
+            reason = "worker scan is stale"
+
+        return WorkerHealthStatus(
+            healthy=reason is None,
+            reason=reason,
+            running=running,
+            started_at=started_at,
+            stopped_at=stopped_at,
+            current_scan_started_at=current_scan_started_at,
+            last_scan_at=snapshot.last_scan_at,
+            last_success_at=last_success_at,
+            last_error_at=last_error_at,
+            last_error_message=last_error_message,
+            consecutive_failures=consecutive_failures,
+            stale_after_seconds=stale_after_seconds,
+            unavailable_watch_root_keys=unavailable_watch_root_keys,
         )
 
     def recover(self) -> None:
@@ -122,18 +197,80 @@ class AninamerWorker:
         self._store.set_last_scan_at()
 
     def run_forever(self, shutdown_check: Callable[[], bool]) -> None:
-        self.recover()
-        while not shutdown_check():
-            self.scan_once()
-            sleep_remaining = self._config.worker.scan_interval_seconds
-            while sleep_remaining > 0 and not shutdown_check():
-                chunk = min(sleep_remaining, 1.0)
-                time.sleep(chunk)
-                sleep_remaining -= chunk
+        self._mark_worker_started()
+        try:
+            try:
+                self.recover()
+            except Exception as exc:
+                self._record_scan_failure(exc)
+                logger.exception("worker: recover_failed")
+
+            while not shutdown_check():
+                self._mark_scan_started()
+                try:
+                    self.scan_once()
+                except Exception as exc:
+                    self._record_scan_failure(exc)
+                    logger.exception("worker: scan_loop_failed")
+                else:
+                    self._record_scan_success()
+                finally:
+                    self._mark_scan_finished()
+
+                sleep_remaining = self._config.worker.scan_interval_seconds
+                while sleep_remaining > 0 and not shutdown_check():
+                    chunk = min(sleep_remaining, 1.0)
+                    time.sleep(chunk)
+                    sleep_remaining -= chunk
+        finally:
+            self._mark_worker_stopped()
 
     def _process_job_requests(self) -> None:
         for request in self._store.list_pending_job_requests():
             self._handle_job_request(request)
+
+    def _mark_worker_started(self) -> None:
+        now = _now_iso()
+        with self._state_lock:
+            self._running = True
+            self._started_at = now
+            self._stopped_at = None
+
+    def _mark_worker_stopped(self) -> None:
+        now = _now_iso()
+        with self._state_lock:
+            self._running = False
+            self._stopped_at = now
+            self._current_scan_started_at = None
+
+    def _mark_scan_started(self) -> None:
+        with self._state_lock:
+            self._current_scan_started_at = _now_iso()
+
+    def _mark_scan_finished(self) -> None:
+        with self._state_lock:
+            self._current_scan_started_at = None
+
+    def _record_scan_success(self) -> None:
+        now = _now_iso()
+        with self._state_lock:
+            self._last_success_at = now
+            self._consecutive_failures = 0
+
+    def _record_scan_failure(self, exc: Exception) -> None:
+        now = _now_iso()
+        with self._state_lock:
+            self._last_error_at = now
+            self._last_error_message = f"{type(exc).__name__}: {exc}"
+            self._consecutive_failures += 1
+
+    def _record_watch_root_available(self, key: str) -> None:
+        with self._state_lock:
+            self._watch_root_errors.pop(key, None)
+
+    def _record_watch_root_unavailable(self, key: str, error_message: str | None) -> None:
+        with self._state_lock:
+            self._watch_root_errors[key] = error_message or "unavailable"
 
     def _handle_job_request(self, request: JobRequestRecord) -> None:
         started = self._store.update_job_request(
@@ -205,7 +342,22 @@ class AninamerWorker:
 
     def _discover_new_jobs(self) -> None:
         for target in self._targets:
-            for series_dir in discover_series_dirs(target.input_root):
+            try:
+                discovery = discover_series_dirs_status(target.input_root)
+            except Exception:
+                logger.exception(
+                    "worker: discover_target_failed watch_root_key=%s input_root=%s",
+                    target.key,
+                    target.input_root,
+                )
+                self._record_watch_root_unavailable(target.key, "discovery failed")
+                continue
+            if discovery.unavailable:
+                self._record_watch_root_unavailable(target.key, discovery.error_message)
+                continue
+            self._record_watch_root_available(target.key)
+            series_dirs = discovery.series_dirs
+            for series_dir in series_dirs:
                 if self._store.find_active_job_by_series_dir(series_dir) is not None:
                     continue
                 logger.info(
@@ -230,9 +382,21 @@ class AninamerWorker:
 
     def _maybe_plan_job(self, job: JobRecord) -> None:
         series_dir = Path(job.series_dir)
-        if not series_dir.exists() or not series_dir.is_dir():
-            return
-        if not is_settled(series_dir, self._config.worker.settle_seconds):
+        try:
+            if not path_is_dir(series_dir):
+                return
+            if not is_settled(series_dir, self._config.worker.settle_seconds):
+                return
+        except OSError as exc:
+            if is_transient_filesystem_error(exc):
+                logger.warning(
+                    "worker: source_unavailable_skip_plan job_id=%s series_dir=%s error=%s",
+                    job.id,
+                    series_dir,
+                    exc,
+                )
+                return
+            self._fail_job(job, stage="plan", exc=exc)
             return
 
         target = self._target_for_key(job.watch_root_key)
@@ -268,6 +432,15 @@ class AninamerWorker:
             if updated_job.status == "apply_requested":
                 logger.info("worker: auto_apply_requested job_id=%s", updated_job.id)
         except Exception as exc:
+            if _is_transient_exception(exc):
+                self._retry_job_after_transient_error(
+                    job,
+                    retry_status="pending",
+                    stage="plan",
+                    series_dir=series_dir,
+                    exc=exc,
+                )
+                return
             self._fail_job(job, stage="plan", exc=exc)
 
     def _apply_job(self, job: JobRecord) -> None:
@@ -323,12 +496,54 @@ class AninamerWorker:
             )
             self._notify_job_apply_succeeded(updated_job, finalize.status)
         except Exception as exc:
+            if _is_transient_exception(exc):
+                self._retry_job_after_transient_error(
+                    job,
+                    retry_status="apply_requested",
+                    stage="apply",
+                    series_dir=series_dir,
+                    exc=exc,
+                )
+                return
             self._fail_job(job, stage="apply", exc=exc)
+
+    def _retry_job_after_transient_error(
+        self,
+        job: JobRecord,
+        *,
+        retry_status: Literal["pending", "apply_requested"],
+        stage: Literal["plan", "apply"],
+        series_dir: Path,
+        exc: Exception,
+    ) -> None:
+        logger.warning(
+            "worker: transient_%s_error_retry job_id=%s series_dir=%s error=%s",
+            stage,
+            job.id,
+            series_dir,
+            exc,
+        )
+        self._store.update_job(
+            job.id,
+            status=retry_status,
+            error_stage=None,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
 
     def _fail_job(self, job: JobRecord, *, stage: str, exc: Exception) -> None:
         series_dir = Path(job.series_dir)
         fail_path: str | None = None
-        if series_dir.exists() and series_dir.is_dir():
+        try:
+            can_move_to_fail = path_is_dir(series_dir)
+        except OSError as path_exc:
+            can_move_to_fail = False
+            logger.warning(
+                "worker: failed_job_source_unavailable job_id=%s series_dir=%s error=%s",
+                job.id,
+                series_dir,
+                path_exc,
+            )
+        if can_move_to_fail:
             try:
                 fail_path = str(move_series_dir_to_fail(series_dir))
             except Exception as move_exc:
@@ -522,6 +737,54 @@ def _now_or_existing(value: str | None) -> str:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _is_stale(
+    last_scan_at: str | None,
+    *,
+    stale_after_seconds: int,
+    now: datetime,
+    fallback_started_at: str | None,
+) -> bool:
+    observed_candidates = [
+        item
+        for item in (
+            _parse_iso_datetime(last_scan_at),
+            _parse_iso_datetime(fallback_started_at),
+        )
+        if item is not None
+    ]
+    if not observed_candidates:
+        return False
+    observed_at = max(observed_candidates)
+    return (now - observed_at).total_seconds() > stale_after_seconds
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _is_transient_exception(exc: Exception) -> bool:
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if isinstance(current, OSError) and is_transient_filesystem_error(current):
+            return True
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+    return False
 
 
 def _build_notification_presentation(

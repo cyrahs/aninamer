@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import errno
+import os
 from pathlib import Path
 
 import pytest
@@ -152,3 +154,21 @@ def test_scan_series_dir_rejects_missing_path(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         scan_series_dir(missing)
+
+
+def test_scan_series_dir_raises_when_tree_walk_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "Show"
+    root.mkdir()
+
+    def broken_walk(*_args, onerror=None, **_kwargs):  # noqa: ANN202
+        assert onerror is not None
+        onerror(OSError(errno.ENOTCONN, "Transport endpoint is not connected"))
+        return []
+
+    monkeypatch.setattr(os, "walk", broken_walk)
+
+    with pytest.raises(OSError, match="Transport endpoint is not connected"):
+        scan_series_dir(root)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import logging
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 MONITOR_ARCHIVE_DIR = "archive"
 MONITOR_FAIL_DIR = "fail"
 MONITOR_EXCLUDED_DIR_NAMES = frozenset({MONITOR_ARCHIVE_DIR, MONITOR_FAIL_DIR})
+TRANSIENT_FILESYSTEM_ERRNOS = frozenset({errno.ENOTCONN, errno.EIO, errno.ESTALE})
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,13 @@ class MonitorTarget:
 class MonitorFinalizeResult:
     status: Literal["deleted", "archived", "skipped"]
     archive_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class SeriesDiscoveryResult:
+    series_dirs: list[Path]
+    unavailable: bool = False
+    error_message: str | None = None
 
 
 def is_within(child: Path, root: Path) -> bool:
@@ -44,20 +53,35 @@ def max_tree_mtime(path: Path) -> float:
     now = time.time()
     latest = 0.0
     try:
-        for root, dirs, files in os.walk(path, followlinks=False):
+        for root, dirs, files in os.walk(
+            path,
+            followlinks=False,
+            onerror=_raise_walk_error,
+        ):
             dirs[:] = [name for name in dirs if name.casefold() not in SKIP_DIR_NAMES]
             root_path = Path(root)
             try:
                 latest = max(latest, root_path.stat().st_mtime)
-            except FileNotFoundError:
+            except OSError as exc:
+                logger.warning(
+                    "monitor: stat_unavailable path=%s error=%s",
+                    root_path,
+                    exc,
+                )
                 return now
             for name in files:
                 file_path = root_path / name
                 try:
                     latest = max(latest, file_path.stat().st_mtime)
-                except FileNotFoundError:
+                except OSError as exc:
+                    logger.warning(
+                        "monitor: stat_unavailable path=%s error=%s",
+                        file_path,
+                        exc,
+                    )
                     return now
-    except FileNotFoundError:
+    except OSError as exc:
+        logger.warning("monitor: walk_unavailable path=%s error=%s", path, exc)
         return now
     return latest
 
@@ -71,31 +95,100 @@ def is_settled(path: Path, settle_seconds: int, *, now: float | None = None) -> 
 
 
 def discover_series_dirs(input_root: Path) -> list[Path]:
+    return discover_series_dirs_status(input_root).series_dirs
+
+
+def discover_series_dirs_status(input_root: Path) -> SeriesDiscoveryResult:
     try:
         entries = list(input_root.iterdir())
     except FileNotFoundError:
-        return []
-    series_dirs = [
-        path
-        for path in entries
-        if path.is_dir()
-        and not path.name.startswith(".")
-        and path.name.casefold() not in MONITOR_EXCLUDED_DIR_NAMES
-    ]
+        return SeriesDiscoveryResult(series_dirs=[])
+    except OSError as exc:
+        logger.warning(
+            "monitor: discover_unavailable input_root=%s error=%s",
+            input_root,
+            exc,
+        )
+        return SeriesDiscoveryResult(
+            series_dirs=[],
+            unavailable=True,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
+    series_dirs: list[Path] = []
+    unavailable_errors: list[str] = []
+    for path in entries:
+        if path.name.startswith("."):
+            continue
+        if path.name.casefold() in MONITOR_EXCLUDED_DIR_NAMES:
+            continue
+        try:
+            if path.is_dir():
+                series_dirs.append(path)
+        except OSError as exc:
+            logger.warning(
+                "monitor: discover_entry_unavailable path=%s error=%s",
+                path,
+                exc,
+            )
+            if is_transient_filesystem_error(exc):
+                unavailable_errors.append(f"{type(exc).__name__}: {exc}")
     series_dirs.sort(key=lambda path: path.name.casefold())
-    return series_dirs
+    if unavailable_errors and not series_dirs:
+        return SeriesDiscoveryResult(
+            series_dirs=[],
+            unavailable=True,
+            error_message=unavailable_errors[0],
+        )
+    return SeriesDiscoveryResult(series_dirs=series_dirs)
 
 
 def snapshot_series_files(series_dir: Path) -> set[str]:
-    if not series_dir.exists() or not series_dir.is_dir():
-        return set()
+    try:
+        if not series_dir.exists() or not series_dir.is_dir():
+            return set()
+    except OSError as exc:
+        logger.warning(
+            "monitor: snapshot_unavailable series_dir=%s error=%s",
+            series_dir,
+            exc,
+        )
+        raise
     files: set[str] = set()
-    for root, _dirs, names in os.walk(series_dir, followlinks=False):
-        root_path = Path(root)
-        for name in names:
-            file_path = root_path / name
-            files.add(file_path.relative_to(series_dir).as_posix())
+    try:
+        walker = os.walk(
+            series_dir,
+            followlinks=False,
+            onerror=_raise_walk_error,
+        )
+        for root, _dirs, names in walker:
+            root_path = Path(root)
+            for name in names:
+                file_path = root_path / name
+                files.add(file_path.relative_to(series_dir).as_posix())
+    except OSError as exc:
+        logger.warning(
+            "monitor: snapshot_unavailable series_dir=%s error=%s",
+            series_dir,
+            exc,
+        )
+        raise
     return files
+
+
+def is_transient_filesystem_error(exc: OSError) -> bool:
+    return exc.errno in TRANSIENT_FILESYSTEM_ERRNOS
+
+
+def path_is_dir(path: Path) -> bool:
+    try:
+        return path.exists() and path.is_dir()
+    except OSError as exc:
+        logger.warning("monitor: path_unavailable path=%s error=%s", path, exc)
+        raise
+
+
+def _raise_walk_error(exc: OSError) -> None:
+    raise exc
 
 
 def plan_source_rel_paths(plan: RenamePlan, series_dir: Path) -> set[str]:

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -16,6 +16,7 @@ from aninamer.worker import AninamerWorker
 from .schemas import (
     ErrorResponse,
     HealthResponse,
+    HealthWorkerResponse,
     JobListResponse,
     JobRequestCreate,
     JobRequestResponse,
@@ -61,8 +62,30 @@ def create_app(
     )
     _register_exception_handlers(app)
 
-    @app.get("/healthz", response_model=HealthResponse, operation_id="getHealth")
-    def get_health() -> HealthResponse:
+    @app.get(
+        "/healthz",
+        response_model=HealthResponse,
+        response_model_exclude_none=True,
+        responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"model": HealthResponse}},
+        operation_id="getHealth",
+    )
+    def get_health(response: Response) -> HealthResponse:
+        health = runtime.worker.health_status()
+        if not health.healthy:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            return HealthResponse(
+                status="unhealthy",
+                reason=health.reason,
+                worker=HealthWorkerResponse(
+                    running=health.running,
+                    last_scan_at=health.last_scan_at,
+                    consecutive_failures=health.consecutive_failures,
+                    stale_after_seconds=health.stale_after_seconds,
+                    unavailable_watch_root_count=len(
+                        health.unavailable_watch_root_keys
+                    ),
+                ),
+            )
         return HealthResponse(status="ok")
 
     def _api_service(request: Request) -> ApiService:

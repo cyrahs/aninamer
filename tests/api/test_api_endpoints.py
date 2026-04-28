@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import threading
+import time
+
 from fastapi.testclient import TestClient
 
 from aninamer.api import create_app
+from aninamer.config import WorkerConfig
 from aninamer.store import RuntimeStore
 from aninamer.worker import AninamerWorker
 
@@ -17,8 +22,8 @@ def test_api_requires_bearer_token_except_healthz(app_config, runtime_store: Run
 
     with TestClient(app) as client:
         health = client.get("/healthz")
-        assert health.status_code == 200
-        assert health.json() == {"status": "ok"}
+        assert health.status_code == 503
+        assert health.json()["status"] == "unhealthy"
 
         missing = client.get("/api/v1/jobs")
         assert missing.status_code == 401
@@ -28,6 +33,63 @@ def test_api_requires_bearer_token_except_healthz(app_config, runtime_store: Run
             headers={"Authorization": "Bearer wrong"},
         )
         assert invalid.status_code == 403
+
+
+def test_healthz_reports_ok_when_worker_thread_is_running(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
+    worker = AninamerWorker(app_config, runtime_store)
+    app = create_app(app_config, store=runtime_store, worker=worker)
+    shutdown = threading.Event()
+    thread = threading.Thread(
+        target=worker.run_forever,
+        args=(shutdown.is_set,),
+        daemon=True,
+    )
+    thread.start()
+    try:
+        for _ in range(50):
+            if worker.health_status().running and runtime_store.snapshot().last_scan_at:
+                break
+            time.sleep(0.02)
+
+        with TestClient(app) as client:
+            health = client.get("/healthz")
+            assert health.status_code == 200
+            assert health.json() == {"status": "ok"}
+    finally:
+        shutdown.set()
+        thread.join(timeout=2.0)
+
+
+def test_healthz_reports_unhealthy_when_worker_scan_is_stale(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
+    config = replace(
+        app_config,
+        worker=WorkerConfig(
+            settle_seconds=0,
+            scan_interval_seconds=1,
+            health_stale_after_seconds=1,
+        ),
+    )
+    worker = AninamerWorker(config, runtime_store)
+    app = create_app(config, store=runtime_store, worker=worker)
+    old_timestamp = "2026-04-13T07:40:01+00:00"
+    runtime_store.set_last_scan_at(old_timestamp)
+    worker._mark_worker_started()
+    with worker._state_lock:
+        worker._started_at = "2026-04-13T07:39:01+00:00"
+
+    with TestClient(app) as client:
+        health = client.get("/healthz")
+        assert health.status_code == 503
+        payload = health.json()
+        assert payload["status"] == "unhealthy"
+        assert payload["reason"] == "worker scan is stale"
+        assert payload["worker"]["last_scan_at"] == old_timestamp
 
 
 def test_jobs_endpoint_hides_internal_artifacts_and_status_endpoint_aggregates(
