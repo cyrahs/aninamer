@@ -73,6 +73,15 @@ def test_build_tmdb_query_variants_includes_traditional_chinese_fallback() -> No
     assert variants == ["向日葵在夜晚绽放", "向日葵在夜晚綻放"]
 
 
+def test_build_tmdb_query_variants_includes_japanese_quoted_title_fallback() -> None:
+    variants = build_tmdb_query_variants(
+        "アニメ版「オタクの仆が一军ギャルと付き合えるまでの话」"
+    )
+
+    assert "オタクの仆が一军ギャルと付き合えるまでの话" in variants
+    assert "オタクの僕が一軍ギャルと付き合えるまでの話" in variants
+
+
 def test_build_tmdb_query_variants_requires_positive_max() -> None:
     with pytest.raises(ValueError):
         build_tmdb_query_variants("Name", max_variants=0)

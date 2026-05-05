@@ -225,6 +225,20 @@ def test_search_tmdb_candidates_tries_traditional_chinese_query_variant() -> Non
     assert queries.index("向日葵在夜晚绽放") < queries.index("向日葵在夜晚綻放")
 
 
+def test_search_tmdb_candidates_tries_japanese_quoted_title_variant() -> None:
+    target = "オタクの僕が一軍ギャルと付き合えるまでの話"
+    tmdb = FakeTMDBClientForLLMTitle(target_query=target, tmdb_id=321116)
+
+    results = search_tmdb_candidates(
+        tmdb,
+        "アニメ版「オタクの仆が一军ギャルと付き合えるまでの话」",
+    )
+
+    assert results[0].id == 321116
+    queries = [query for query, _language in tmdb.calls]
+    assert target in queries
+
+
 def test_build_rename_plan_error_includes_attempted_queries(tmp_path: Path) -> None:
     series_dir = tmp_path / "[X] TotallyUnfindableTitle [1080p]"
     out_root = tmp_path / "out"

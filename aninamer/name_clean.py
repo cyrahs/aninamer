@@ -57,6 +57,7 @@ _TRAILING_TITLE_SUFFIX_PATTERNS = (
     re.compile(r"(?i)\s+the\s+animation\s*$"),
 )
 _TMDB_TAG_PATTERN = re.compile(r"\{\s*tmdb-([^{}]+)\s*\}", re.IGNORECASE)
+_JAPANESE_TITLE_QUOTE_PATTERN = re.compile(r"「([^「」]+)」")
 
 
 def _normalize_whitespace(text: str) -> str:
@@ -92,6 +93,14 @@ def _append_if_changed(values: list[str], value: str) -> None:
     value = value.strip()
     if value and (not values or value != values[-1]):
         values.append(value)
+
+
+def _extract_japanese_quoted_titles(text: str) -> list[str]:
+    return [
+        _normalize_whitespace(match.group(1)).strip()
+        for match in _JAPANESE_TITLE_QUOTE_PATTERN.finditer(text)
+        if _normalize_whitespace(match.group(1)).strip()
+    ]
 
 
 def clean_tmdb_query(name: str) -> str:
@@ -130,6 +139,10 @@ def build_tmdb_query_variants(name: str, *, max_variants: int = 6) -> list[str]:
         if stripped_suffix != cleaned:
             _append_if_changed(variants, stripped_suffix)
             _append_if_changed(variants, to_traditional_chinese(stripped_suffix))
+
+    for quoted_title in _extract_japanese_quoted_titles(name):
+        _append_if_changed(variants, quoted_title)
+        _append_if_changed(variants, to_traditional_chinese(quoted_title))
 
     words = cleaned.split()
     for count in (8, 6, 4, 2):
