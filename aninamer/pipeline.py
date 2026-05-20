@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timezone
 import logging
 import os
 from pathlib import Path
@@ -49,6 +50,16 @@ class ExistingEpisodeInventory:
     matched_series_dirs: tuple[Path, ...]
     occupied_episode_numbers_by_season: dict[int, tuple[int, ...]]
     existing_s00_files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReleasedEpisodeContext:
+    season_episode_counts: dict[int, int]
+    regular_seasons_zh: dict[int, SeasonDetails]
+    regular_seasons_en: dict[int, SeasonDetails]
+    specials_zh: SeasonDetails | None
+    specials_en: SeasonDetails | None
+    filtered_episodes: tuple[dict[str, object], ...]
 
 
 def tmdb_client_from_env() -> TMDBClient:
@@ -105,6 +116,145 @@ def _parse_existing_episode_slot(file_name: str) -> tuple[int, tuple[int, ...]] 
     raw_episode_end = match.group("e2")
     episode_end = int(raw_episode_end) if raw_episode_end is not None else episode_start
     return season, tuple(range(episode_start, episode_end + 1))
+
+
+def _parse_tmdb_air_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _future_episode_numbers(
+    seasons: Sequence[SeasonDetails],
+    *,
+    today: date,
+) -> dict[int, dict[int, str]]:
+    future: dict[int, dict[int, str]] = {}
+    for season in seasons:
+        for episode in season.episodes:
+            parsed_air_date = _parse_tmdb_air_date(episode.air_date)
+            if parsed_air_date is None or parsed_air_date <= today:
+                continue
+            future.setdefault(season.season_number, {})[
+                episode.episode_number
+            ] = episode.air_date or parsed_air_date.isoformat()
+    return future
+
+
+def _merge_future_episode_numbers(
+    *sources: dict[int, dict[int, str]],
+) -> dict[int, dict[int, str]]:
+    merged: dict[int, dict[int, str]] = {}
+    for source in sources:
+        for season_number, episodes in source.items():
+            merged.setdefault(season_number, {}).update(episodes)
+    return merged
+
+
+def _filter_season_details(
+    season: SeasonDetails | None,
+    future_by_season: dict[int, dict[int, str]],
+) -> SeasonDetails | None:
+    if season is None:
+        return None
+    future_episode_numbers = future_by_season.get(season.season_number, {})
+    if not future_episode_numbers:
+        return season
+    return SeasonDetails(
+        id=season.id,
+        season_number=season.season_number,
+        episodes=[
+            episode
+            for episode in season.episodes
+            if episode.episode_number not in future_episode_numbers
+        ],
+    )
+
+
+def _filter_season_map(
+    seasons: dict[int, SeasonDetails],
+    future_by_season: dict[int, dict[int, str]],
+) -> dict[int, SeasonDetails]:
+    filtered: dict[int, SeasonDetails] = {}
+    for season_number, season in seasons.items():
+        filtered_season = _filter_season_details(season, future_by_season)
+        if filtered_season is not None:
+            filtered[season_number] = filtered_season
+    return filtered
+
+
+def _season_available_episode_count(
+    *seasons: SeasonDetails | None,
+) -> int:
+    episode_numbers: set[int] = set()
+    for season in seasons:
+        if season is None:
+            continue
+        episode_numbers.update(episode.episode_number for episode in season.episodes)
+    return len(episode_numbers)
+
+
+def _filter_unreleased_episode_placeholders(
+    *,
+    season_episode_counts: dict[int, int],
+    regular_seasons_zh: dict[int, SeasonDetails],
+    regular_seasons_en: dict[int, SeasonDetails],
+    specials_zh: SeasonDetails | None,
+    specials_en: SeasonDetails | None,
+    today: date,
+) -> ReleasedEpisodeContext:
+    future_by_season = _merge_future_episode_numbers(
+        _future_episode_numbers(tuple(regular_seasons_zh.values()), today=today),
+        _future_episode_numbers(tuple(regular_seasons_en.values()), today=today),
+        _future_episode_numbers((specials_zh,), today=today) if specials_zh else {},
+        _future_episode_numbers((specials_en,), today=today) if specials_en else {},
+    )
+
+    filtered_regular_seasons_zh = _filter_season_map(
+        regular_seasons_zh,
+        future_by_season,
+    )
+    filtered_regular_seasons_en = _filter_season_map(
+        regular_seasons_en,
+        future_by_season,
+    )
+    filtered_specials_zh = _filter_season_details(specials_zh, future_by_season)
+    filtered_specials_en = _filter_season_details(specials_en, future_by_season)
+
+    filtered_counts = dict(season_episode_counts)
+    for season_number in sorted(
+        set(filtered_regular_seasons_zh) | set(filtered_regular_seasons_en)
+    ):
+        filtered_counts[season_number] = _season_available_episode_count(
+            filtered_regular_seasons_zh.get(season_number),
+            filtered_regular_seasons_en.get(season_number),
+        )
+    if filtered_specials_zh is not None or filtered_specials_en is not None:
+        filtered_counts[0] = _season_available_episode_count(
+            filtered_specials_zh,
+            filtered_specials_en,
+        )
+
+    filtered_episodes = tuple(
+        {
+            "season": season_number,
+            "episode": episode_number,
+            "air_date": air_date,
+        }
+        for season_number, episodes in sorted(future_by_season.items())
+        for episode_number, air_date in sorted(episodes.items())
+    )
+    return ReleasedEpisodeContext(
+        season_episode_counts=filtered_counts,
+        regular_seasons_zh=filtered_regular_seasons_zh,
+        regular_seasons_en=filtered_regular_seasons_en,
+        specials_zh=filtered_specials_zh,
+        specials_en=filtered_specials_en,
+        filtered_episodes=filtered_episodes,
+    )
 
 
 def inspect_existing_episode_inventory(
@@ -333,6 +483,24 @@ def build_rename_plan_for_series(
         specials_zh = None
         specials_en = None
 
+    release_filter_today = datetime.now(timezone.utc).date()
+    released_context = _filter_unreleased_episode_placeholders(
+        season_episode_counts=season_episode_counts,
+        regular_seasons_zh=regular_seasons_zh,
+        regular_seasons_en=regular_seasons_en,
+        specials_zh=specials_zh,
+        specials_en=specials_en,
+        today=release_filter_today,
+    )
+    if released_context.filtered_episodes:
+        diagnostics_logger.info(
+            "tmdb_unreleased_episodes_filtered: tmdb_id=%s today=%s episodes=%s season_episode_counts=%s",
+            tmdb_id,
+            release_filter_today.isoformat(),
+            released_context.filtered_episodes,
+            released_context.season_episode_counts,
+        )
+
     if llm_for_mapping_factory is None:
         raise ValueError("llm_for_mapping_factory is required")
     llm_for_mapping = llm_for_mapping_factory()
@@ -350,11 +518,11 @@ def build_rename_plan_for_series(
         tmdb_id=tmdb_id,
         series_name_zh_cn=series_name_zh_cn,
         year=year,
-        season_episode_counts=season_episode_counts,
-        regular_seasons_zh=regular_seasons_zh,
-        regular_seasons_en=regular_seasons_en,
-        specials_zh=specials_zh,
-        specials_en=specials_en,
+        season_episode_counts=released_context.season_episode_counts,
+        regular_seasons_zh=released_context.regular_seasons_zh,
+        regular_seasons_en=released_context.regular_seasons_en,
+        specials_zh=released_context.specials_zh,
+        specials_en=released_context.specials_en,
         scan=scan,
         existing_episode_numbers_by_season=(
             existing_inventory.occupied_episode_numbers_by_season

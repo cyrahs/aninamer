@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 from typing import Sequence
 
@@ -142,6 +143,65 @@ class CoolDeMTMDBClient:
         )
 
 
+class FuturePlaceholderTMDBClient:
+    def resolve_series_title(
+        self, tv_id: int, *, country_codes: tuple[str, ...] = ()
+    ) -> tuple[str, TvDetails]:
+        return (
+            "爱从辣妹开始的命运",
+            TvDetails(
+                id=tv_id,
+                name="爱从辣妹开始的命运",
+                original_name="ラブはギャルから始まる運命",
+                first_air_date="2026-04-10",
+                seasons=[SeasonSummary(season_number=1, episode_count=2)],
+            ),
+        )
+
+    def get_season(
+        self, tv_id: int, season_number: int, *, language: str = "zh-CN"
+    ) -> SeasonDetails:
+        if season_number != 1:
+            return SeasonDetails(id=None, season_number=season_number, episodes=[])
+        if language == "zh-CN":
+            return SeasonDetails(
+                id=31064101,
+                season_number=1,
+                episodes=[
+                    Episode(
+                        episode_number=1,
+                        name="第1话",
+                        overview="",
+                        air_date="2000-01-01",
+                    ),
+                    Episode(
+                        episode_number=2,
+                        name="未来占位",
+                        overview="",
+                        air_date="9999-12-31",
+                    ),
+                ],
+            )
+        return SeasonDetails(
+            id=31064102,
+            season_number=1,
+            episodes=[
+                Episode(
+                    episode_number=1,
+                    name="Episode 1",
+                    overview="",
+                    air_date="2000-01-01",
+                ),
+                Episode(
+                    episode_number=2,
+                    name="Future Placeholder",
+                    overview="",
+                    air_date="9999-12-31",
+                ),
+            ],
+        )
+
+
 def test_build_rename_plan_for_series_includes_incremental_inventory_and_regular_episode_names(
     tmp_path: Path,
 ) -> None:
@@ -223,3 +283,38 @@ def test_build_rename_plan_for_series_maps_semantic_title_after_existing_episode
     assert "S01|1" in prompt
     assert "S01|2|崩れないオンナ|The Unbreakable Woman" in prompt
     assert f"1|{video_name}|" in prompt
+
+
+def test_build_rename_plan_filters_future_tmdb_episode_placeholders(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    caplog.set_level(logging.INFO)
+
+    series_dir = tmp_path / "ラブはギャルから始まる运命 {tmdb-310641}"
+    output_root = tmp_path / "library"
+    _write(series_dir / "ラブはギャルから始まる运命 [405846].mp4", b"video")
+
+    llm = FakeLLM(
+        reply='{"tmdb": 310641, "eps": [{"v": 1, "s": 1, "e1": 1, "e2": 1, "u": []}]}'
+    )
+
+    plan = build_rename_plan_for_series(
+        series_dir=series_dir,
+        output_root=output_root,
+        options=PlanBuildOptions(max_output_tokens=512),
+        tmdb_client_factory=FuturePlaceholderTMDBClient,
+        llm_for_mapping_factory=lambda: llm,
+    )
+
+    assert [move.dst.name for move in plan.moves] == [
+        "爱从辣妹开始的命运 S01E01.mp4"
+    ]
+    assert llm.last_messages is not None
+    prompt = llm.last_messages[1].content
+    assert "S01=1" in prompt
+    assert "S01|1|第1话|Episode 1" in prompt
+    assert "未来占位" not in prompt
+    assert "Future Placeholder" not in prompt
+    assert "tmdb_unreleased_episodes_filtered" in caplog.text
+    assert "9999-12-31" in caplog.text

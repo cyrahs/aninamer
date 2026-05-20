@@ -84,6 +84,7 @@ class Episode:
     episode_number: int
     name: str | None
     overview: str | None
+    air_date: str | None = None
 
 
 @dataclass(frozen=True)
@@ -387,6 +388,7 @@ class TMDBClient:
                     episode_number=episode_number,
                     name=_optional_str(item.get("name")),
                     overview=_optional_str(item.get("overview")),
+                    air_date=_optional_str(item.get("air_date")),
                 )
             )
         episodes.sort(key=lambda episode: episode.episode_number)

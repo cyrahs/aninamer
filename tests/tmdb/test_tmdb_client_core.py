@@ -113,8 +113,13 @@ def test_get_season_parses_episodes_and_falls_back_to_argument() -> None:
     payload = {
         "id": 12,
         "episodes": [
-            {"episode_number": 2, "name": "B", "overview": "two"},
-            {"episode_number": 1, "name": "A"},
+            {
+                "episode_number": 2,
+                "name": "B",
+                "overview": "two",
+                "air_date": "2026-06-05",
+            },
+            {"episode_number": 1, "name": "A", "air_date": "2026-05-01"},
         ],
     }
     transport = CapturingTransport(
@@ -129,7 +134,9 @@ def test_get_season_parses_episodes_and_falls_back_to_argument() -> None:
     assert season.episode_count == 2
     assert [e.episode_number for e in season.episodes] == [1, 2]
     assert season.episodes[0].name == "A"
+    assert season.episodes[0].air_date == "2026-05-01"
     assert season.episodes[1].overview == "two"
+    assert season.episodes[1].air_date == "2026-06-05"
 
 
 def test_get_season_uses_response_season_number_when_present() -> None:
