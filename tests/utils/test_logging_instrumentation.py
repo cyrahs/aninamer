@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from logging.handlers import TimedRotatingFileHandler
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -9,6 +10,11 @@ import pytest
 
 from aninamer.episode_mapping import map_episodes_with_llm
 from aninamer.llm_client import ChatMessage
+from aninamer.logging_utils import (
+    DEFAULT_LOG_RETENTION_DAYS,
+    DIAGNOSTIC_LOGGER_NAME,
+    configure_logging,
+)
 from aninamer.plan import build_rename_plan
 from aninamer.scanner import FileCandidate, ScanResult, scan_series_dir
 from aninamer.tmdb_client import Episode, SeasonDetails, TvSearchResult
@@ -36,6 +42,44 @@ def _write(p: Path, data: bytes) -> None:
     p.write_bytes(data)
 
 
+def _remove_aninamer_handlers() -> None:
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if getattr(handler, "_aninamer", False):
+            root.removeHandler(handler)
+            handler.close()
+
+
+def test_configure_logging_splits_app_and_diagnostics_logs(tmp_path: Path) -> None:
+    configure_logging(log_path=tmp_path)
+    try:
+        logging.getLogger("aninamer.worker").info("regular worker message")
+        logging.getLogger(DIAGNOSTIC_LOGGER_NAME).info("diagnostic detail message")
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+
+        app_log = tmp_path / "aninamer.log"
+        diagnostics_log = tmp_path / "diagnostics.log"
+
+        assert "regular worker message" in app_log.read_text(encoding="utf-8")
+        assert "diagnostic detail message" not in app_log.read_text(encoding="utf-8")
+        assert "diagnostic detail message" in diagnostics_log.read_text(encoding="utf-8")
+        assert "regular worker message" not in diagnostics_log.read_text(
+            encoding="utf-8"
+        )
+
+        rotating_handlers = [
+            handler
+            for handler in logging.getLogger().handlers
+            if isinstance(handler, TimedRotatingFileHandler)
+        ]
+        assert {handler.backupCount for handler in rotating_handlers} == {
+            DEFAULT_LOG_RETENTION_DAYS
+        }
+    finally:
+        _remove_aninamer_handlers()
+
+
 def test_scan_logs_start_and_done(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     series = tmp_path / "series"
     _write(series / "ep1.mkv", b"v")
@@ -51,6 +95,8 @@ def test_scan_logs_start_and_done(tmp_path: Path, caplog: pytest.LogCaptureFixtu
     assert "scan: done" in text
     assert "videos=1" in text
     assert "subtitles=1" in text
+    assert "scan_snapshot:" in text
+    assert "extension_counts" in text
 
 
 def test_tmdb_resolve_logs_raw_llm_output(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -70,6 +116,8 @@ def test_tmdb_resolve_logs_raw_llm_output(tmp_path: Path, caplog: pytest.LogCapt
     assert "tmdb_resolve: llm_prompt" in text
     assert "dirname: DirName" in text
     assert "tmdb_resolve: raw_llm_output" in text
+    assert "tmdb_id_select_candidates" in text
+    assert "tmdb_id_select_llm_output" in text
     assert '{"tmdb": 111}' in text
     assert "tmdb_resolve: selected" in text
 
@@ -125,6 +173,8 @@ def test_episode_mapping_and_plan_logs(tmp_path: Path, caplog: pytest.LogCapture
     assert "episode_map: llm_call" in text
     assert "episode_map: llm_prompt" in text
     assert "schema (no extra keys)" in text
+    assert "episode_mapping_llm_output" in text
+    assert '"tmdb":123' in text
     assert "episode_map: parsed" in text
     assert "plan: start" in text
     assert "plan: built" in text

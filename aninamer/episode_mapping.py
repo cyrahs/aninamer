@@ -5,6 +5,7 @@ import json
 import logging
 from typing import Mapping, Sequence
 
+from aninamer.diagnostics import logger as diagnostics_logger
 from aninamer.errors import LLMOutputError, OpenAIError
 from aninamer.json_utils import extract_first_json_object
 from aninamer.llm_client import LLMClient
@@ -231,6 +232,14 @@ def map_episodes_with_llm(
                 messages,
                 temperature=0.0,
                 max_output_tokens=max_output_tokens,
+            )
+            diagnostics_logger.info(
+                "episode_mapping_llm_output: tmdb_id=%s series_dir=%s attempt=%s/%s raw_output=%s",
+                tmdb_id,
+                scan.series_dir,
+                attempt,
+                max_attempts,
+                response,
             )
             logger.debug("episode_map: raw_llm_output=%s", response)
             result = parse_episode_mapping_output(

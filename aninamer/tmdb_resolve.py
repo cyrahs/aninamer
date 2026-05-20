@@ -4,6 +4,7 @@ import json
 import logging
 from typing import Sequence
 
+from aninamer.diagnostics import logger as diagnostics_logger
 from aninamer.errors import LLMOutputError, OpenAIError
 from aninamer.json_utils import extract_first_json_object
 from aninamer.llm_client import LLMClient
@@ -14,6 +15,19 @@ from aninamer.prompts import (
 from aninamer.tmdb_client import TvSearchResult
 
 logger = logging.getLogger(__name__)
+
+
+def _candidate_to_log(candidate: TvSearchResult) -> dict[str, object]:
+    return {
+        "id": candidate.id,
+        "name": candidate.name,
+        "original_name": candidate.original_name,
+        "first_air_date": candidate.first_air_date,
+        "year": candidate.year,
+        "origin_country": candidate.origin_country,
+        "popularity": candidate.popularity,
+        "vote_count": candidate.vote_count,
+    }
 
 
 def parse_selected_tmdb_tv_id(text: str, *, allowed_ids: set[int]) -> int:
@@ -94,6 +108,13 @@ def resolve_tmdb_search_title_with_llm(
     for attempt in range(1, max_attempts + 1):
         try:
             response = llm.chat(messages, temperature=0.0, max_output_tokens=4096)
+            diagnostics_logger.info(
+                "tmdb_title_clean_llm_output: dirname=%s attempt=%s/%s raw_output=%s",
+                dirname,
+                attempt,
+                max_attempts,
+                response,
+            )
             logger.debug("tmdb_resolve: title_raw_llm_output=%s", response)
 
             title = parse_tmdb_search_title(response)
@@ -132,6 +153,12 @@ def resolve_tmdb_tv_id_with_llm(
         len(candidate_list),
         max_candidates,
     )
+    diagnostics_logger.info(
+        "tmdb_id_select_candidates: dirname=%s max_candidates=%s candidates=%s",
+        dirname,
+        max_candidates,
+        [_candidate_to_log(candidate) for candidate in candidate_list[:max_candidates]],
+    )
     if len(candidate_list) == 1:
         logger.info(
             "tmdb_resolve: single_candidate id=%s",
@@ -157,6 +184,14 @@ def resolve_tmdb_tv_id_with_llm(
     for attempt in range(1, max_attempts + 1):
         try:
             response = llm.chat(messages, temperature=0.0, max_output_tokens=4096)
+            diagnostics_logger.info(
+                "tmdb_id_select_llm_output: dirname=%s attempt=%s/%s allowed_ids=%s raw_output=%s",
+                dirname,
+                attempt,
+                max_attempts,
+                sorted(allowed_ids),
+                response,
+            )
             logger.debug("tmdb_resolve: raw_llm_output=%s", response)
 
             selected_id = parse_selected_tmdb_tv_id(response, allowed_ids=allowed_ids)

@@ -9,6 +9,7 @@ from typing import Callable, Sequence
 
 from aninamer.apply import ApplyResult, apply_rename_plan
 from aninamer.config import TmdbConfig
+from aninamer.diagnostics import logger as diagnostics_logger
 from aninamer.episode_mapping import map_episodes_with_llm
 from aninamer.errors import LLMOutputError, OpenAIError
 from aninamer.llm_client import LLMClient
@@ -59,6 +60,19 @@ def tmdb_client_from_env() -> TMDBClient:
 
 def tmdb_client_from_settings(settings: TmdbConfig) -> TMDBClient:
     return TMDBClient(api_key=settings.api_key, timeout=settings.timeout)
+
+
+def _tmdb_candidate_to_log(candidate: TvSearchResult) -> dict[str, object]:
+    return {
+        "id": candidate.id,
+        "name": candidate.name,
+        "original_name": candidate.original_name,
+        "first_air_date": candidate.first_air_date,
+        "year": candidate.year,
+        "origin_country": candidate.origin_country,
+        "popularity": candidate.popularity,
+        "vote_count": candidate.vote_count,
+    }
 
 
 def _find_existing_series_dirs_by_tmdb_id(output_root: Path, tmdb_id: int) -> tuple[Path, ...]:
@@ -140,6 +154,12 @@ def search_tmdb_candidates(
     queries = build_tmdb_query_variants(name)
     languages = ["zh-CN", "en-US", "ja-JP"]
     logger.info("tmdb_search: start name=%s variants=%s", name, len(queries))
+    diagnostics_logger.info(
+        "tmdb_search_queries: name=%s queries=%s languages=%s",
+        name,
+        queries,
+        languages,
+    )
 
     def _search_anime_queries(query_list: Sequence[str]) -> list[TvSearchResult]:
         for query in query_list:
@@ -155,7 +175,13 @@ def search_tmdb_candidates(
                 for candidate in results:
                     candidates_by_id.setdefault(candidate.id, candidate)
             if candidates_by_id:
-                return list(candidates_by_id.values())
+                candidates = list(candidates_by_id.values())
+                diagnostics_logger.info(
+                    "tmdb_search_candidates: phase=anime query=%s candidates=%s",
+                    query,
+                    [_tmdb_candidate_to_log(candidate) for candidate in candidates],
+                )
+                return candidates
         return []
 
     def _search_all_queries(query_list: Sequence[str]) -> list[TvSearchResult]:
@@ -172,7 +198,13 @@ def search_tmdb_candidates(
                 for candidate in results:
                     candidates_by_id.setdefault(candidate.id, candidate)
             if candidates_by_id:
-                return list(candidates_by_id.values())
+                candidates = list(candidates_by_id.values())
+                diagnostics_logger.info(
+                    "tmdb_search_candidates: phase=fallback query=%s candidates=%s",
+                    query,
+                    [_tmdb_candidate_to_log(candidate) for candidate in candidates],
+                )
+                return candidates
         return []
 
     candidates = _search_anime_queries(queries)
@@ -198,6 +230,12 @@ def search_tmdb_candidates(
         ) from exc
 
     llm_queries = build_tmdb_query_variants(llm_title)
+    diagnostics_logger.info(
+        "tmdb_search_llm_title: name=%s llm_title=%s llm_queries=%s",
+        name,
+        llm_title,
+        llm_queries,
+    )
     attempted = {query.casefold() for query in queries}
     llm_queries = [query for query in llm_queries if query.casefold() not in attempted]
     if not llm_queries:
@@ -242,8 +280,18 @@ def build_rename_plan_for_series(
             series_dir.name,
             llm_title_factory=llm_for_tmdb_id_factory,
         )
+        diagnostics_logger.info(
+            "tmdb_resolve_candidates: series_dir=%s candidates=%s",
+            series_dir,
+            [_tmdb_candidate_to_log(candidate) for candidate in candidates],
+        )
         if len(candidates) == 1:
             tmdb_id = candidates[0].id
+            diagnostics_logger.info(
+                "tmdb_resolve_single_candidate: series_dir=%s tmdb_id=%s",
+                series_dir,
+                tmdb_id,
+            )
         else:
             if llm_for_tmdb_id_factory is None:
                 raise ValueError("llm_for_tmdb_id_factory is required")
@@ -289,6 +337,15 @@ def build_rename_plan_for_series(
         raise ValueError("llm_for_mapping_factory is required")
     llm_for_mapping = llm_for_mapping_factory()
     existing_inventory = inspect_existing_episode_inventory(output_root, tmdb_id)
+    diagnostics_logger.info(
+        "episode_inventory: series_dir=%s output_root=%s tmdb_id=%s matched_series_dirs=%s occupied_episode_numbers_by_season=%s existing_s00_files=%s",
+        series_dir,
+        output_root,
+        tmdb_id,
+        [str(path) for path in existing_inventory.matched_series_dirs],
+        existing_inventory.occupied_episode_numbers_by_season,
+        existing_inventory.existing_s00_files,
+    )
     mapping = map_episodes_with_llm(
         tmdb_id=tmdb_id,
         series_name_zh_cn=series_name_zh_cn,

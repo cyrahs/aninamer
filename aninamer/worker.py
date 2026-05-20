@@ -15,14 +15,15 @@ from aninamer.artifacts import (
     rename_result_to_payload,
 )
 from aninamer.config import AppConfig, WatchRootConfig
+from aninamer.diagnostics import logger as diagnostics_logger
 from aninamer.errors import NotificationDeliveryError, PlanValidationError
 from aninamer.llm_client import LLMClient
 from aninamer.monitoring import (
     MonitorTarget,
     discover_series_dirs_status,
     finalize_series_dir_after_apply,
-    is_settled,
     is_transient_filesystem_error,
+    max_tree_mtime,
     move_series_dir_to_fail,
     path_is_dir,
     snapshot_series_files,
@@ -371,12 +372,20 @@ class AninamerWorker:
                     series_dir,
                     target.key,
                 )
-                self._store.create_job(
+                created = self._store.create_job(
                     series_name=series_dir.name,
                     watch_root_key=target.key,
                     source_kind="monitor",
                     series_dir=series_dir,
                     output_root=target.output_root,
+                )
+                diagnostics_logger.info(
+                    "worker_job_created: job_id=%s source_kind=%s watch_root_key=%s series_dir=%s output_root=%s",
+                    created.id,
+                    created.source_kind,
+                    created.watch_root_key,
+                    created.series_dir,
+                    created.output_root,
                 )
 
     def _clear_missing_failed_jobs(self) -> None:
@@ -413,8 +422,27 @@ class AninamerWorker:
         series_dir = Path(job.series_dir)
         try:
             if not path_is_dir(series_dir):
+                diagnostics_logger.info(
+                    "worker_plan_check: job_id=%s series_dir=%s exists=false",
+                    job.id,
+                    series_dir,
+                )
                 return
-            if not is_settled(series_dir, self._config.worker.settle_seconds):
+            now = time.time()
+            latest_mtime = max_tree_mtime(series_dir)
+            settle_seconds = self._config.worker.settle_seconds
+            age_seconds = now - latest_mtime
+            settled = settle_seconds <= 0 or age_seconds >= settle_seconds
+            diagnostics_logger.info(
+                "worker_settle_check: job_id=%s series_dir=%s settled=%s settle_seconds=%s age_seconds=%.3f latest_mtime=%.6f",
+                job.id,
+                series_dir,
+                settled,
+                settle_seconds,
+                age_seconds,
+                latest_mtime,
+            )
+            if not settled:
                 return
         except OSError as exc:
             if is_transient_filesystem_error(exc):
@@ -451,6 +479,14 @@ class AninamerWorker:
             )
             self._store.save_artifact(job.id, "plan", rename_plan_to_payload(plan))
             video_count, subtitle_count = _count_moves(plan)
+            diagnostics_logger.info(
+                "worker_plan_artifact_saved: job_id=%s tmdb_id=%s moves=%s video_moves=%s subtitle_moves=%s",
+                job.id,
+                plan.tmdb_id,
+                len(plan.moves),
+                video_count,
+                subtitle_count,
+            )
             if video_count + subtitle_count == 0:
                 raise PlanValidationError("rename plan contains no moves")
             updated_job = self._store.update_job(
@@ -492,6 +528,12 @@ class AninamerWorker:
         try:
             plan = rename_plan_from_payload(payload)
             before_files = snapshot_series_files(series_dir)
+            diagnostics_logger.info(
+                "worker_apply_start: job_id=%s series_dir=%s before_file_count=%s",
+                job.id,
+                series_dir,
+                len(before_files),
+            )
             execution = execute_apply(
                 plan,
                 dry_run=False,
@@ -506,6 +548,13 @@ class AninamerWorker:
                 series_dir,
                 plan,
                 before_files=before_files,
+            )
+            diagnostics_logger.info(
+                "worker_apply_finalized: job_id=%s finalize_status=%s archive_path=%s applied_count=%s",
+                job.id,
+                finalize.status,
+                finalize.archive_path,
+                execution.applied_count,
             )
             self._store.save_artifact(
                 job.id,
@@ -565,6 +614,7 @@ class AninamerWorker:
     def _fail_job(self, job: JobRecord, *, stage: str, exc: Exception) -> None:
         series_dir = Path(job.series_dir)
         fail_path: str | None = None
+        source_file_count: int | None = None
         try:
             can_move_to_fail = path_is_dir(series_dir)
         except OSError as path_exc:
@@ -577,13 +627,58 @@ class AninamerWorker:
             )
         if can_move_to_fail:
             try:
+                source_file_count = len(snapshot_series_files(series_dir))
+            except Exception as snapshot_exc:
+                logger.warning(
+                    "worker: failed_job_snapshot_unavailable job_id=%s series_dir=%s error=%s",
+                    job.id,
+                    series_dir,
+                    snapshot_exc,
+                )
+            try:
                 fail_path = str(move_series_dir_to_fail(series_dir))
+                logger.info(
+                    "worker: failed_move_to_fail job_id=%s series_dir=%s fail_path=%s",
+                    job.id,
+                    series_dir,
+                    fail_path,
+                )
+                diagnostics_logger.info(
+                    "worker_fail_moved: job_id=%s stage=%s series_dir=%s fail_path=%s source_file_count=%s error_type=%s error=%s",
+                    job.id,
+                    stage,
+                    series_dir,
+                    fail_path,
+                    source_file_count,
+                    type(exc).__name__,
+                    exc,
+                )
             except Exception as move_exc:
                 logger.warning(
                     "worker: failed_move_to_fail series_dir=%s error=%s",
                     series_dir,
                     move_exc,
                 )
+                diagnostics_logger.info(
+                    "worker_fail_move_failed: job_id=%s stage=%s series_dir=%s source_file_count=%s error_type=%s error=%s move_error_type=%s move_error=%s",
+                    job.id,
+                    stage,
+                    series_dir,
+                    source_file_count,
+                    type(exc).__name__,
+                    exc,
+                    type(move_exc).__name__,
+                    move_exc,
+                )
+        else:
+            diagnostics_logger.info(
+                "worker_fail_without_move: job_id=%s stage=%s series_dir=%s error_type=%s error=%s",
+                job.id,
+                stage,
+                series_dir,
+                type(exc).__name__,
+                exc,
+            )
         logger.exception("worker: job_failed id=%s stage=%s", job.id, stage, exc_info=exc)
         updated_job = self._store.update_job(
             job.id,
