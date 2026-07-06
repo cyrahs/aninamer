@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from logging.handlers import TimedRotatingFileHandler
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -11,7 +10,6 @@ import pytest
 from aninamer.episode_mapping import map_episodes_with_llm
 from aninamer.llm_client import ChatMessage
 from aninamer.logging_utils import (
-    DEFAULT_LOG_RETENTION_DAYS,
     DIAGNOSTIC_LOGGER_NAME,
     configure_logging,
 )
@@ -50,32 +48,30 @@ def _remove_aninamer_handlers() -> None:
             handler.close()
 
 
-def test_configure_logging_splits_app_and_diagnostics_logs(tmp_path: Path) -> None:
-    configure_logging(log_path=tmp_path)
+def test_configure_logging_uses_runtime_stream_only(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
     try:
         logging.getLogger("aninamer.worker").info("regular worker message")
         logging.getLogger(DIAGNOSTIC_LOGGER_NAME).info("diagnostic detail message")
         for handler in logging.getLogger().handlers:
             handler.flush()
 
-        app_log = tmp_path / "aninamer.log"
-        diagnostics_log = tmp_path / "diagnostics.log"
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "regular worker message" in combined
+        assert "diagnostic detail message" in combined
+        assert list(tmp_path.iterdir()) == []
 
-        assert "regular worker message" in app_log.read_text(encoding="utf-8")
-        assert "diagnostic detail message" not in app_log.read_text(encoding="utf-8")
-        assert "diagnostic detail message" in diagnostics_log.read_text(encoding="utf-8")
-        assert "regular worker message" not in diagnostics_log.read_text(
-            encoding="utf-8"
-        )
-
-        rotating_handlers = [
+        aninamer_handlers = [
             handler
             for handler in logging.getLogger().handlers
-            if isinstance(handler, TimedRotatingFileHandler)
+            if getattr(handler, "_aninamer", False)
         ]
-        assert {handler.backupCount for handler in rotating_handlers} == {
-            DEFAULT_LOG_RETENTION_DAYS
-        }
+        assert len(aninamer_handlers) == 1
+        assert isinstance(aninamer_handlers[0], logging.StreamHandler)
     finally:
         _remove_aninamer_handlers()
 

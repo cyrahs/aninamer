@@ -1,19 +1,26 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from aninamer.config import AppConfig
-from aninamer.store import RuntimeStore
+from aninamer.store import IdempotencyConflictError, RuntimeStore
 from aninamer.worker import AninamerWorker
 
 from .schemas import (
+    ApplyRequest,
+    ApplyResponse,
+    ApplyValidationRequest,
+    ApplyValidationResponse,
+    CorrectionRequest,
+    CorrectionResponse,
     ErrorResponse,
     HealthResponse,
     HealthWorkerResponse,
@@ -21,10 +28,27 @@ from .schemas import (
     JobRequestCreate,
     JobRequestResponse,
     JobResponse,
+    OperationItemResultListResponse,
+    OperationListResponse,
+    OperationResponse,
+    ReviewPayload,
+    ReviewSafetyCheckRequest,
+    ReviewSafetyCheckResponse,
+    ReopenFromReviewRequest,
+    ReopenFromReviewResponse,
+    RematchCommitRequest,
+    RematchCommitResponse,
+    RematchPreviewRequest,
+    RematchPreviewResponse,
+    RollbackEligibilityRequest,
+    RollbackEligibilityResponse,
     RuntimeResponse,
+    SafetyResponse,
     StatusResponse,
+    WithdrawRequest,
+    WithdrawResponse,
 )
-from .service import ApiService
+from .service import ApiService, ApiServiceError
 
 
 @dataclass(frozen=True)
@@ -48,19 +72,20 @@ def create_app(
         service=ApiService(store=store, worker=worker),
     )
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):  # noqa: ANN202
-        app.state.runtime = runtime
-        yield
-
     app = FastAPI(
         title="aninamer",
         version="0.1.3",
         docs_url="/docs",
         openapi_url="/openapi.json",
-        lifespan=lifespan,
     )
+    app.state.runtime = runtime
     _register_exception_handlers(app)
+    static_dir = Path(__file__).parent / "static"
+    app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
+
+    @app.get("/ui", include_in_schema=False)
+    def get_ui() -> FileResponse:
+        return FileResponse(static_dir / "index.html")
 
     @app.get(
         "/healthz",
@@ -126,6 +151,380 @@ def create_app(
         return item
 
     @app.post(
+        "/api/v1/jobs/{job_id}/reopen-from-review",
+        dependencies=[AuthDep],
+        response_model=ReopenFromReviewResponse,
+        operation_id="reopenJobFromReview",
+    )
+    def reopen_job_from_review(
+        job_id: int,
+        payload: ReopenFromReviewRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        service: ApiService = ApiServiceDep,
+    ) -> ReopenFromReviewResponse:
+        try:
+            item = service.reopen_from_review(
+                job_id,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApiServiceError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            ) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.get(
+        "/api/v1/jobs/{job_id}/review",
+        dependencies=[AuthDep],
+        response_model=ReviewPayload,
+        operation_id="getJobReview",
+    )
+    def get_job_review(
+        job_id: int,
+        service: ApiService = ApiServiceDep,
+    ) -> ReviewPayload:
+        item = service.review(job_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.get(
+        "/api/v1/jobs/{job_id}/operations",
+        dependencies=[AuthDep],
+        response_model=OperationListResponse,
+        operation_id="listJobOperations",
+    )
+    def list_job_operations(
+        job_id: int,
+        service: ApiService = ApiServiceDep,
+    ) -> OperationListResponse:
+        item = service.list_operations(job_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.get(
+        "/api/v1/jobs/{job_id}/operations/{operation_id}",
+        dependencies=[AuthDep],
+        response_model=OperationResponse,
+        operation_id="getJobOperation",
+    )
+    def get_job_operation(
+        job_id: int,
+        operation_id: int,
+        service: ApiService = ApiServiceDep,
+    ) -> OperationResponse:
+        item = service.get_operation(job_id, operation_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="operation not found")
+        return item
+
+    @app.get(
+        "/api/v1/jobs/{job_id}/operations/{operation_id}/items",
+        dependencies=[AuthDep],
+        response_model=OperationItemResultListResponse,
+        operation_id="listJobOperationItems",
+    )
+    def list_job_operation_items(
+        job_id: int,
+        operation_id: int,
+        service: ApiService = ApiServiceDep,
+    ) -> OperationItemResultListResponse:
+        item = service.list_operation_items(job_id, operation_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="operation not found")
+        return item
+
+    @app.get(
+        "/api/v1/jobs/{job_id}/safety",
+        dependencies=[AuthDep],
+        response_model=SafetyResponse,
+        operation_id="getJobSafety",
+    )
+    def get_job_safety(
+        job_id: int,
+        service: ApiService = ApiServiceDep,
+    ) -> SafetyResponse:
+        item = service.safety(job_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.post(
+        "/api/v1/jobs/{job_id}/rematch-preview",
+        dependencies=[AuthDep],
+        response_model=RematchPreviewResponse,
+        operation_id="previewJobRematch",
+    )
+    def preview_job_rematch(
+        job_id: int,
+        payload: RematchPreviewRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        service: ApiService = ApiServiceDep,
+    ) -> RematchPreviewResponse:
+        try:
+            item = service.rematch_preview(
+                job_id,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApiServiceError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            ) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.post(
+        "/api/v1/jobs/{job_id}/rematch-commit",
+        dependencies=[AuthDep],
+        response_model=RematchCommitResponse,
+        operation_id="commitJobRematch",
+    )
+    def commit_job_rematch(
+        job_id: int,
+        payload: RematchCommitRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        service: ApiService = ApiServiceDep,
+    ) -> RematchCommitResponse:
+        try:
+            item = service.rematch_commit(
+                job_id,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApiServiceError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            ) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.post(
+        "/api/v1/jobs/{job_id}/corrections",
+        dependencies=[AuthDep],
+        response_model=CorrectionResponse,
+        operation_id="commitJobCorrections",
+    )
+    def commit_job_corrections(
+        job_id: int,
+        payload: CorrectionRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        service: ApiService = ApiServiceDep,
+    ) -> CorrectionResponse:
+        try:
+            item = service.corrections(
+                job_id,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApiServiceError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            ) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.post(
+        "/api/v1/jobs/{job_id}/validate",
+        dependencies=[AuthDep],
+        response_model=ApplyValidationResponse,
+        operation_id="validateJobApply",
+    )
+    def validate_job_apply(
+        job_id: int,
+        payload: ApplyValidationRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        service: ApiService = ApiServiceDep,
+    ) -> ApplyValidationResponse:
+        try:
+            item = service.validate_apply(
+                job_id,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApiServiceError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            ) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.post(
+        "/api/v1/jobs/{job_id}/apply",
+        dependencies=[AuthDep],
+        response_model=ApplyResponse,
+        operation_id="applyJob",
+    )
+    def apply_job(
+        job_id: int,
+        payload: ApplyRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        service: ApiService = ApiServiceDep,
+    ) -> ApplyResponse:
+        try:
+            item = service.apply_job(
+                job_id,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApiServiceError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            ) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.post(
+        "/api/v1/jobs/{job_id}/review-safety-check",
+        dependencies=[AuthDep],
+        response_model=ReviewSafetyCheckResponse,
+        operation_id="checkJobReviewSafety",
+    )
+    def check_job_review_safety(
+        job_id: int,
+        payload: ReviewSafetyCheckRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        service: ApiService = ApiServiceDep,
+    ) -> ReviewSafetyCheckResponse:
+        try:
+            item = service.review_safety_check(
+                job_id,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApiServiceError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            ) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.post(
+        "/api/v1/jobs/{job_id}/rollback-eligibility",
+        dependencies=[AuthDep],
+        response_model=RollbackEligibilityResponse,
+        operation_id="checkRollbackEligibility",
+    )
+    def check_rollback_eligibility(
+        job_id: int,
+        payload: RollbackEligibilityRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        service: ApiService = ApiServiceDep,
+    ) -> RollbackEligibilityResponse:
+        try:
+            item = service.rollback_eligibility(
+                job_id,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApiServiceError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            ) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.post(
+        "/api/v1/jobs/{job_id}/withdraw",
+        dependencies=[AuthDep],
+        response_model=WithdrawResponse,
+        operation_id="withdrawJob",
+    )
+    def withdraw_job(
+        job_id: int,
+        payload: WithdrawRequest,
+        idempotency_key: str = Header(alias="Idempotency-Key"),
+        service: ApiService = ApiServiceDep,
+    ) -> WithdrawResponse:
+        try:
+            item = service.withdraw_job(
+                job_id,
+                payload,
+                idempotency_key=idempotency_key,
+            )
+        except IdempotencyConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApiServiceError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail={
+                    "code": exc.code,
+                    "message": exc.message,
+                    "details": exc.details,
+                },
+            ) from exc
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
+
+    @app.post(
         "/api/v1/job-requests",
         dependencies=[AuthDep],
         response_model=JobRequestResponse,
@@ -136,7 +535,10 @@ def create_app(
         payload: JobRequestCreate,
         service: ApiService = ApiServiceDep,
     ) -> JobRequestResponse:
-        return service.create_job_request(payload.action, payload.job_id)
+        item = service.create_job_request(payload.action, payload.job_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="job not found")
+        return item
 
     @app.get(
         "/api/v1/job-requests/{request_id}",
@@ -207,16 +609,28 @@ def _register_exception_handlers(app: FastAPI) -> None:
     async def handle_http_error(
         _request: Request, exc: StarletteHTTPException
     ) -> JSONResponse:
+        detail = exc.detail
         error_code = {
             401: "unauthorized",
             403: "forbidden",
             404: "not_found",
             405: "method_not_allowed",
         }.get(exc.status_code, "http_error")
+        message = str(detail)
+        details = None
+        if isinstance(detail, dict):
+            code = detail.get("code")
+            if isinstance(code, str):
+                error_code = code
+            detail_message = detail.get("message")
+            if isinstance(detail_message, str):
+                message = detail_message
+            details = detail.get("details")
         return _json_error(
             status_code=exc.status_code,
             code=error_code,
-            message=str(exc.detail),
+            message=message,
+            details=details,
             headers=exc.headers,
         )
 

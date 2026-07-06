@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import logging
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from aninamer.diagnostics import logger as diagnostics_logger
 from aninamer.errors import LLMOutputError, OpenAIError
@@ -14,6 +14,7 @@ from aninamer.scanner import ScanResult
 from aninamer.tmdb_client import SeasonDetails
 
 logger = logging.getLogger(__name__)
+LLMFailureCallback = Callable[[int, str, Exception], None]
 
 
 @dataclass(frozen=True)
@@ -196,6 +197,7 @@ def map_episodes_with_llm(
     llm: LLMClient,
     max_output_tokens: int = 2048,
     max_attempts: int = 3,
+    on_invalid_reply: LLMFailureCallback | None = None,
 ) -> EpisodeMappingResult:
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
@@ -233,15 +235,27 @@ def map_episodes_with_llm(
                 temperature=0.0,
                 max_output_tokens=max_output_tokens,
             )
-            diagnostics_logger.info(
-                "episode_mapping_llm_output: tmdb_id=%s series_dir=%s attempt=%s/%s raw_output=%s",
-                tmdb_id,
-                scan.series_dir,
+        except OpenAIError as exc:
+            if attempt >= max_attempts:
+                raise
+            logger.warning(
+                "episode_map: llm_retry attempt=%s/%s error=%s",
                 attempt,
                 max_attempts,
-                response,
+                exc,
             )
-            logger.debug("episode_map: raw_llm_output=%s", response)
+            continue
+
+        diagnostics_logger.info(
+            "episode_mapping_llm_output: tmdb_id=%s series_dir=%s attempt=%s/%s raw_output=%s",
+            tmdb_id,
+            scan.series_dir,
+            attempt,
+            max_attempts,
+            response,
+        )
+        logger.debug("episode_map: raw_llm_output=%s", response)
+        try:
             result = parse_episode_mapping_output(
                 response,
                 expected_tmdb_id=tmdb_id,
@@ -259,7 +273,9 @@ def map_episodes_with_llm(
                 mapped_subtitles_count,
             )
             return result
-        except (OpenAIError, LLMOutputError) as exc:
+        except LLMOutputError as exc:
+            if on_invalid_reply is not None:
+                on_invalid_reply(attempt, response, exc)
             if attempt >= max_attempts:
                 raise
             logger.warning(

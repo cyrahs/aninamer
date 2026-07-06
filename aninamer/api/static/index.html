@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>aninamer review</title>
+    <link rel="stylesheet" href="/ui/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <header class="brand">
+          <h1>aninamer</h1>
+          <span id="runtimeStatus">未连接</span>
+        </header>
+        <form id="authForm" class="auth-form">
+          <label>
+            API Token
+            <input id="apiToken" name="apiToken" type="password" autocomplete="current-password" />
+          </label>
+          <button type="submit">保存</button>
+        </form>
+        <div class="toolbar">
+          <button id="refreshJobs" type="button">刷新</button>
+        </div>
+        <nav id="jobList" class="job-list" aria-label="jobs"></nav>
+      </aside>
+
+      <main class="workspace">
+        <section class="topbar">
+          <div>
+            <h2 id="jobTitle">选择一个 job</h2>
+            <p id="jobMeta"></p>
+          </div>
+          <div class="actions">
+            <form id="rematchForm" class="rematch-form">
+              <label>
+                TMDB ID
+                <input id="tmdbInput" name="tmdbInput" type="number" min="1" inputmode="numeric" />
+              </label>
+              <button id="previewRematch" type="submit" disabled>预览重匹配</button>
+            </form>
+            <button id="validateApply" type="button" disabled>全量验证</button>
+            <button id="applyValidated" type="button" disabled>应用验证结果</button>
+            <button id="checkReviewSafety" type="button" disabled>检查安全</button>
+            <button id="checkRollback" type="button" disabled>检查回撤</button>
+            <button id="withdrawChecked" type="button" disabled>执行回撤</button>
+            <button id="reopenFromReview" type="button" disabled>重新打开</button>
+            <button id="refreshReview" type="button" disabled>刷新审查</button>
+          </div>
+        </section>
+
+        <section id="notice" class="notice hidden"></section>
+
+        <section class="summary-grid">
+          <article>
+            <h3>Readiness</h3>
+            <dl id="readiness"></dl>
+          </article>
+          <article>
+            <h3>TMDB</h3>
+            <dl id="tmdbInfo"></dl>
+          </article>
+          <article>
+            <h3>Safety</h3>
+            <dl id="safetyInfo"></dl>
+          </article>
+          <article>
+            <h3>Apply</h3>
+            <dl id="validationInfo"></dl>
+          </article>
+          <article>
+            <h3>Rollback</h3>
+            <dl id="rollbackInfo"></dl>
+            <div id="rollbackDetails" class="detail-list"></div>
+          </article>
+        </section>
+
+        <section class="tabs">
+          <div class="tab-buttons" role="tablist">
+            <button class="tab active" data-tab="mapping" type="button">匹配</button>
+            <button class="tab" data-tab="files" type="button">文件</button>
+            <button class="tab" data-tab="moves" type="button">移动</button>
+            <button class="tab" data-tab="rematch" type="button">重匹配</button>
+            <button class="tab" data-tab="evidence" type="button">证据</button>
+            <button class="tab" data-tab="operations" type="button">操作</button>
+          </div>
+
+          <div id="tab-mapping" class="tab-panel active">
+            <form id="correctionForm" class="correction-form">
+              <div class="section-heading">
+                <h3>Manual Correction</h3>
+                <button id="submitCorrection" type="submit" disabled>提交修正</button>
+              </div>
+              <div class="correction-grid">
+                <label>
+                  Target ID
+                  <input id="correctionTargetId" type="number" min="1" inputmode="numeric" />
+                </label>
+                <label>
+                  Season
+                  <input id="correctionSeason" type="number" min="0" inputmode="numeric" />
+                </label>
+                <label>
+                  Start
+                  <input id="correctionStart" type="number" min="1" inputmode="numeric" />
+                </label>
+                <label>
+                  End
+                  <input id="correctionEnd" type="number" min="1" inputmode="numeric" />
+                </label>
+                <label>
+                  Subtitle Link ID
+                  <input id="correctionSubtitleLinkId" type="number" min="1" inputmode="numeric" />
+                </label>
+                <label>
+                  Variant
+                  <select id="correctionVariant">
+                    <option value="detected">detected</option>
+                    <option value="chs">chs</option>
+                    <option value="cht">cht</option>
+                    <option value="chi">chi</option>
+                  </select>
+                </label>
+              </div>
+            </form>
+            <div class="split">
+              <section>
+                <h3>Episode Targets</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>视频源</th>
+                        <th>目标</th>
+                        <th>状态</th>
+                        <th>字幕</th>
+                      </tr>
+                    </thead>
+                    <tbody id="episodeRows"></tbody>
+                  </table>
+                </div>
+              </section>
+              <section>
+                <h3>Subtitle Links</h3>
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>Target</th>
+                        <th>字幕源</th>
+                        <th>变体</th>
+                        <th>状态</th>
+                      </tr>
+                    </thead>
+                    <tbody id="subtitleRows"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
+          </div>
+
+          <div id="tab-files" class="tab-panel">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>类型</th>
+                    <th>路径</th>
+                    <th>当前位置</th>
+                    <th>处置</th>
+                    <th>说明</th>
+                  </tr>
+                </thead>
+                <tbody id="fileRows"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="tab-moves" class="tab-panel">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>源 ID</th>
+                    <th>类型</th>
+                    <th>源路径</th>
+                    <th>计划目标</th>
+                    <th>当前路径</th>
+                    <th>状态</th>
+                  </tr>
+                </thead>
+                <tbody id="moveRows"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div id="tab-rematch" class="tab-panel">
+            <section>
+              <div class="section-heading">
+                <h3>Rematch Preview</h3>
+                <button id="commitRematch" type="button" disabled>提交预览为计划</button>
+              </div>
+              <dl id="rematchInfo"></dl>
+              <div class="table-wrap rematch-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>源 ID</th>
+                      <th>类型</th>
+                      <th>变化</th>
+                      <th>当前计划目标</th>
+                      <th>预览目标</th>
+                    </tr>
+                  </thead>
+                  <tbody id="rematchRows"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <div id="tab-evidence" class="tab-panel">
+            <div id="evidenceList" class="evidence-list"></div>
+          </div>
+
+          <div id="tab-operations" class="tab-panel">
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>类型</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
+                    <th>结果</th>
+                  </tr>
+                </thead>
+                <tbody id="operationRows"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/ui/app.js" type="module"></script>
+  </body>
+</html>

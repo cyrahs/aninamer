@@ -56,6 +56,11 @@ SKIP_DIR_NAMES = {
 }
 
 
+def is_env_file_name(name: str) -> bool:
+    normalized = name.casefold()
+    return normalized.startswith(".env")
+
+
 @dataclass(frozen=True)
 class FileCandidate:
     id: int
@@ -87,9 +92,15 @@ def scan_series_dir(series_dir: Path) -> ScanResult:
         followlinks=False,
         onerror=_raise_walk_error,
     ):
-        dirs[:] = [name for name in dirs if name.casefold() not in SKIP_DIR_NAMES]
+        dirs[:] = [
+            name
+            for name in dirs
+            if name.casefold() not in SKIP_DIR_NAMES and not is_env_file_name(name)
+        ]
         root_path = Path(root)
         for name in files:
+            if is_env_file_name(name):
+                continue
             file_path = root_path / name
             ext = file_path.suffix.lower()
             stat_result = file_path.stat()

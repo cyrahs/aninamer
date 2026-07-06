@@ -9,13 +9,16 @@ import time
 from typing import Literal
 
 from aninamer.plan import RenamePlan
-from aninamer.scanner import SKIP_DIR_NAMES
+from aninamer.scanner import SKIP_DIR_NAMES, is_env_file_name
 
 logger = logging.getLogger(__name__)
 
 MONITOR_ARCHIVE_DIR = "archive"
 MONITOR_FAIL_DIR = "fail"
-MONITOR_EXCLUDED_DIR_NAMES = frozenset({MONITOR_ARCHIVE_DIR, MONITOR_FAIL_DIR})
+MONITOR_REVIEW_DIR = "review"
+MONITOR_EXCLUDED_DIR_NAMES = frozenset(
+    {MONITOR_ARCHIVE_DIR, MONITOR_FAIL_DIR, MONITOR_REVIEW_DIR}
+)
 TRANSIENT_FILESYSTEM_ERRNOS = frozenset({errno.ENOTCONN, errno.EIO, errno.ESTALE})
 
 
@@ -58,7 +61,12 @@ def max_tree_mtime(path: Path) -> float:
             followlinks=False,
             onerror=_raise_walk_error,
         ):
-            dirs[:] = [name for name in dirs if name.casefold() not in SKIP_DIR_NAMES]
+            dirs[:] = [
+                name
+                for name in dirs
+                if name.casefold() not in SKIP_DIR_NAMES
+                and not is_env_file_name(name)
+            ]
             root_path = Path(root)
             try:
                 latest = max(latest, root_path.stat().st_mtime)
@@ -70,6 +78,8 @@ def max_tree_mtime(path: Path) -> float:
                 )
                 return now
             for name in files:
+                if is_env_file_name(name):
+                    continue
                 file_path = root_path / name
                 try:
                     latest = max(latest, file_path.stat().st_mtime)
@@ -160,9 +170,17 @@ def snapshot_series_files(series_dir: Path) -> set[str]:
             followlinks=False,
             onerror=_raise_walk_error,
         )
-        for root, _dirs, names in walker:
+        for root, dirs, names in walker:
+            dirs[:] = [
+                name
+                for name in dirs
+                if name.casefold() not in SKIP_DIR_NAMES
+                and not is_env_file_name(name)
+            ]
             root_path = Path(root)
             for name in names:
+                if is_env_file_name(name):
+                    continue
                 file_path = root_path / name
                 files.add(file_path.relative_to(series_dir).as_posix())
     except OSError as exc:

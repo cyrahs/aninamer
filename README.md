@@ -1,6 +1,7 @@
 # Aninamer
 
-Aninamer now runs as a backend service with a FastAPI API and a background worker.
+Aninamer now runs as a backend service with a FastAPI API, a static review UI,
+and a background worker.
 
 - `python -m aninamer` starts the FastAPI API and the background worker.
 - `python -m aninamer.api` starts the API only.
@@ -10,8 +11,22 @@ The worker owns directory discovery and processing. Frontends do not submit arbi
 ## Runtime model
 
 - The worker scans configured watch roots, creates jobs, builds rename plans, and optionally applies them.
-- The API exposes job history, job requests, runtime info, and a status overview endpoint for pending and failed items.
-- Internal artifacts for `plan`, `result`, and `rollback` are stored in PostgreSQL as JSONB and are not exposed by the API.
+- The API exposes job history, review snapshots, operations, safety summaries,
+  job requests, runtime info, and status overviews.
+- Planned and applied move items are stored as database rows with per-item status. `plan` and `rollback` JSON artifacts are not used.
+- Apply result summaries are stored in PostgreSQL as internal JSONB and are not exposed by the API.
+
+## UI
+
+- `GET /ui` serves the static review workbench.
+- The UI stores the API token in browser local storage and calls `/api/v1/*`
+  with `Authorization: Bearer <api.token>`.
+- Current UI surface: job list, review snapshot, source files, episode targets,
+  subtitle links, TMDB context, mapping evidence, operations, safety summary,
+  explicit rollback eligibility checks, TMDB-ID rematch previews, rematch commit,
+  manual episode/subtitle variant corrections, and all-for-apply validation for
+  proposed plans, first-pass apply execution for validated plans, and
+  first-pass withdraw-to-review execution after an explicit eligibility check.
 
 ## API
 
@@ -24,6 +39,18 @@ Protected endpoints:
 - `GET /api/v1/runtime`
 - `GET /api/v1/jobs`
 - `GET /api/v1/jobs/{job_id}`
+- `GET /api/v1/jobs/{job_id}/review`
+- `GET /api/v1/jobs/{job_id}/operations`
+- `GET /api/v1/jobs/{job_id}/operations/{operation_id}`
+- `GET /api/v1/jobs/{job_id}/operations/{operation_id}/items`
+- `GET /api/v1/jobs/{job_id}/safety`
+- `POST /api/v1/jobs/{job_id}/rematch-preview`
+- `POST /api/v1/jobs/{job_id}/rematch-commit`
+- `POST /api/v1/jobs/{job_id}/corrections`
+- `POST /api/v1/jobs/{job_id}/validate`
+- `POST /api/v1/jobs/{job_id}/apply`
+- `POST /api/v1/jobs/{job_id}/rollback-eligibility`
+- `POST /api/v1/jobs/{job_id}/withdraw`
 - `POST /api/v1/job-requests`
 - `GET /api/v1/job-requests/{request_id}`
 - `GET /api/v1/status`
@@ -62,7 +89,6 @@ Service runtime is configured with `config.toml`. Use [config.toml.example](conf
 
 Supported sections:
 
-- `log_path`
 - `[database]`
 - `[tmdb]`
 - `[openai]`
@@ -92,7 +118,6 @@ docker run --rm \
   -v "/path/to/config.toml:/app/config.toml:ro" \
   -v "/path/to/downloads:/input" \
   -v "/path/to/library:/output" \
-  -v "/path/to/logs:/logs" \
   -p 8091:8091 \
   aninamer
 ```

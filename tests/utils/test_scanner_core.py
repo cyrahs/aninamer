@@ -6,12 +6,27 @@ from pathlib import Path
 
 import pytest
 
-from aninamer.scanner import scan_series_dir
+from aninamer.scanner import is_env_file_name, scan_series_dir
 
 
 def _write_file(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        (".env", True),
+        (".env.local", True),
+        (".envrc", True),
+        (".envlocal", True),
+        ("foo.env", False),
+        ("env", False),
+    ],
+)
+def test_is_env_file_name_matches_env_prefix(name: str, expected: bool) -> None:
+    assert is_env_file_name(name) is expected
 
 
 def test_scan_series_dir_requires_directory(tmp_path: Path) -> None:
@@ -64,6 +79,31 @@ def test_scan_series_dir_collects_and_sorts_candidates(tmp_path: Path) -> None:
     assert sizes["subs/aa.ass"] == 5
     assert sizes["subs/zz.SRT"] == 3
 
+
+def test_scan_series_dir_skips_env_files_without_stat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    series_dir = tmp_path / "Series"
+    _write_file(series_dir / "ep1.mkv", b"video")
+    _write_file(series_dir / ".env", b"secret")
+    _write_file(series_dir / ".env.local.mkv", b"secret-video")
+    _write_file(series_dir / ".envrc.mkv", b"secret-video")
+    _write_file(series_dir / ".envlocal", b"secret")
+    _write_file(series_dir / ".env.d" / "ep2.mkv", b"secret-dir-video")
+    original_stat = Path.stat
+
+    def guarded_stat(self: Path, *args, **kwargs):  # noqa: ANN202
+        if self.name.startswith(".env"):
+            raise AssertionError(f"stat called for sensitive env file: {self}")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
+
+    result = scan_series_dir(series_dir)
+
+    assert [item.rel_path for item in result.videos] == ["ep1.mkv"]
+    assert result.subtitles == []
 
 
 def _write(p: Path, data: bytes) -> None:

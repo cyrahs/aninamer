@@ -7,12 +7,9 @@ from pathlib import Path
 import threading
 from typing import Sequence
 
-from aninamer.artifacts import rename_plan_from_payload, rename_plan_to_payload
 from aninamer.config import WatchRootConfig, WorkerConfig
-from aninamer.errors import ApplyError
 from aninamer.llm_client import ChatMessage
 from aninamer.monitoring import SeriesDiscoveryResult
-from aninamer.plan import RenamePlan
 from aninamer.store import RuntimeStore
 from aninamer.tmdb_client import SeasonDetails, SeasonSummary, TvDetails
 from aninamer.worker import AninamerWorker
@@ -177,7 +174,10 @@ def test_worker_transient_plan_error_is_retried_not_failed(
     def broken_build(**_kwargs):  # noqa: ANN202
         raise OSError(errno.ENOTCONN, "Transport endpoint is not connected")
 
-    monkeypatch.setattr("aninamer.worker.build_rename_plan_for_series", broken_build)
+    monkeypatch.setattr(
+        "aninamer.worker.build_rename_plan_result_for_series",
+        broken_build,
+    )
 
     worker = AninamerWorker(app_config, runtime_store)
 
@@ -191,10 +191,9 @@ def test_worker_transient_plan_error_is_retried_not_failed(
     assert runtime_store.list_notifications_after(0) == []
 
 
-def test_worker_transient_apply_error_is_retried_not_failed(
+def test_worker_legacy_apply_is_rejected_before_execute_apply(
     app_config,
     runtime_store: RuntimeStore,
-    monkeypatch,
 ) -> None:
     series_dir = app_config.watch_roots[0].input_root / "ShowA {tmdb-123}"
     _write(series_dir / "ep1.mkv", b"video")
@@ -210,29 +209,43 @@ def test_worker_transient_apply_error_is_retried_not_failed(
     job = runtime_store.list_jobs()[0]
     runtime_store.update_job(job.id, status="apply_requested")
 
-    transient = OSError(errno.ENOTCONN, "Transport endpoint is not connected")
-
-    def broken_execute(*_args, **_kwargs):  # noqa: ANN202
-        raise ApplyError("apply failed") from transient
-
-    monkeypatch.setattr("aninamer.worker.execute_apply", broken_execute)
-
     worker.scan_once()
 
     updated = runtime_store.get_job(job.id)
     assert updated is not None
-    assert updated.status == "apply_requested"
-    assert updated.error_stage is None
+    assert updated.status == "failed"
+    assert updated.error_stage == "apply"
+    assert updated.error_message == (
+        "legacy apply is disabled until Operation/PathEvent/"
+        "DestinationReservation safety chain is implemented"
+    )
     assert updated.fail_path is None
+    assert series_dir.exists()
 
 
-def test_worker_scan_creates_planned_job_and_persists_plan_artifact(
+def test_worker_scan_creates_planned_job_and_persists_move_items(
     app_config,
     runtime_store: RuntimeStore,
+    monkeypatch,
 ) -> None:
     series_dir = app_config.watch_roots[0].input_root / "ShowA {tmdb-123}"
     _write(series_dir / "ep1.mkv", b"video")
     _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
+    _write(series_dir / "notes.txt", b"notes")
+    _write(series_dir / ".env", b"secret")
+    _write(series_dir / ".env.local.mkv", b"secret-video")
+    _write(series_dir / ".envrc.mkv", b"secret-video")
+    _write(series_dir / ".envlocal", b"secret")
+    _write(series_dir / ".env.d" / "ep2.mkv", b"secret-dir-video")
+    _write(series_dir / ".envrc.d" / "ep3.mkv", b"secret-dir-video")
+    original_stat = Path.stat
+
+    def guarded_stat(self: Path, *args, **kwargs):  # noqa: ANN202
+        if self.name.startswith(".env"):
+            raise AssertionError(f"stat called for sensitive env file: {self}")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
 
     worker = AninamerWorker(
         app_config,
@@ -253,9 +266,38 @@ def test_worker_scan_creates_planned_job_and_persists_plan_artifact(
     assert job.tmdb_id == 123
     assert job.video_moves_count == 1
     assert job.subtitle_moves_count == 1
-    assert runtime_store.load_artifact(job.id, "plan") is not None
+    move_items = runtime_store.list_job_moves(job.id)
+    assert [(item.kind, item.src_id, item.status) for item in move_items] == [
+        ("subtitle", 2, "proposed"),
+        ("video", 1, "proposed"),
+    ]
     assert runtime_store.load_artifact(job.id, "result") is None
-    assert runtime_store.load_artifact(job.id, "rollback") is None
+    snapshot = runtime_store.get_review_snapshot(job.id)
+    assert snapshot is not None
+    assert snapshot.selected_tmdb_info["selected_tmdb_id"] == 123
+    assert snapshot.selected_tmdb_info["seasons"] == [
+        {"season_number": 1, "episode_count": 1}
+    ]
+    assert [
+        (item["kind"], item["final_disposition"])
+        for item in snapshot.source_files
+    ] == [
+        ("subtitle", "planned_output"),
+        ("video", "planned_output"),
+        ("ignored", "original"),
+    ]
+    assert snapshot.source_files[2]["ignored_reason"] == "unsupported_extension"
+    rel_paths = [
+        item["original_path"]["rel_path"]
+        for item in snapshot.source_files
+    ]
+    assert all(not path.startswith(".env") for path in rel_paths)
+    assert snapshot.episode_targets[0]["video_source_id"] == 1
+    assert snapshot.episode_targets[0]["subtitle_link_ids"] == [1]
+    assert snapshot.subtitle_links[0]["subtitle_source_id"] == 2
+    assert snapshot.subtitle_links[0]["variant_detected"] == "chs"
+    assert snapshot.mapping_attempts[0]["mapped_video_count"] == 1
+    assert snapshot.mapping_evidence
     assert runtime_store.list_notifications_after(0) == []
 
 
@@ -293,12 +335,9 @@ def test_worker_empty_plan_fails_without_archive_when_auto_apply_enabled(
         config.watch_roots[0].input_root / "archive" / "ShowA {tmdb-123}"
     ).exists()
 
-    plan_payload = runtime_store.load_artifact(job.id, "plan")
-    assert plan_payload is not None
-    plan = rename_plan_from_payload(plan_payload)
-    assert plan.moves == ()
+    assert runtime_store.list_job_moves(job.id) == []
+    assert runtime_store.get_review_snapshot(job.id) is None
     assert runtime_store.load_artifact(job.id, "result") is None
-    assert runtime_store.load_artifact(job.id, "rollback") is None
 
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_plan_failed"]
@@ -307,7 +346,7 @@ def test_worker_empty_plan_fails_without_archive_when_auto_apply_enabled(
     assert notifications[0].message == "生成计划失败：归档计划为空"
 
 
-def test_worker_rejects_legacy_empty_plan_at_apply_boundary(
+def test_worker_rejects_missing_move_items_at_apply_boundary(
     app_config,
     runtime_store: RuntimeStore,
 ) -> None:
@@ -320,15 +359,6 @@ def test_worker_rejects_legacy_empty_plan_at_apply_boundary(
         series_dir=series_dir,
         output_root=app_config.watch_roots[0].output_root,
     )
-    plan = RenamePlan(
-        tmdb_id=123,
-        series_name_zh_cn="测试动画",
-        year=2020,
-        series_dir=series_dir,
-        output_root=app_config.watch_roots[0].output_root,
-        moves=(),
-    )
-    runtime_store.save_artifact(job.id, "plan", rename_plan_to_payload(plan))
     runtime_store.update_job(
         job.id,
         status="apply_requested",
@@ -349,23 +379,23 @@ def test_worker_rejects_legacy_empty_plan_at_apply_boundary(
     assert updated.status == "failed"
     assert updated.error_stage == "apply"
     assert updated.error_message is not None
-    assert "rename plan contains no moves" in updated.error_message
-    assert updated.fail_path is not None
-    fail_path = Path(updated.fail_path)
-    assert fail_path.parent.name == "fail"
-    assert (fail_path / "ep1.mkv").exists()
+    assert updated.error_message == (
+        "legacy apply is disabled until Operation/PathEvent/"
+        "DestinationReservation safety chain is implemented"
+    )
+    assert updated.fail_path is None
+    assert series_dir.exists()
     assert not (
         app_config.watch_roots[0].input_root / "archive" / "ShowA {tmdb-123}"
     ).exists()
     assert runtime_store.load_artifact(job.id, "result") is None
-    assert runtime_store.load_artifact(job.id, "rollback") is None
 
     notifications = runtime_store.list_notifications_after(0)
     assert [item.event_kind for item in notifications] == ["job_apply_failed"]
-    assert notifications[0].message == "归档失败：归档计划为空"
+    assert notifications[0].message == "归档失败：legacy apply is disabled until Operation/PathEvent/DestinationReservation safety chain is implemented"
 
 
-def test_worker_apply_request_writes_result_and_rollback_artifacts(
+def test_worker_apply_request_is_rejected_until_safe_apply_chain_exists(
     app_config,
     runtime_store: RuntimeStore,
 ) -> None:
@@ -392,31 +422,38 @@ def test_worker_apply_request_writes_result_and_rollback_artifacts(
     updated_request = runtime_store.get_job_request(request.id)
     assert updated_job is not None
     assert updated_request is not None
-    assert updated_job.status == "succeeded"
-    assert updated_request.status == "succeeded"
-    assert runtime_store.load_artifact(updated_job.id, "plan") is not None
+    assert updated_job.status == "planned"
+    assert updated_job.error_stage is None
+    assert updated_job.error_message is None
+    assert updated_request.status == "rejected"
+    assert updated_request.error_message == (
+        "legacy apply is disabled until Operation/PathEvent/"
+        "DestinationReservation safety chain is implemented"
+    )
     result_payload = runtime_store.load_artifact(updated_job.id, "result")
-    rollback_payload = runtime_store.load_artifact(updated_job.id, "rollback")
-    assert result_payload is not None
-    assert rollback_payload is not None
-    assert result_payload["version"] == 1
-    assert result_payload["finalize"]["status"] == "deleted"
-    rollback_plan = rename_plan_from_payload(rollback_payload)
-    assert len(rollback_plan.moves) == 2
-    assert not series_dir.exists()
+    assert result_payload is None
+    move_items = runtime_store.list_job_moves(updated_job.id)
+    assert [item.status for item in move_items] == ["proposed", "proposed"]
+    assert all(item.applied_at is None for item in move_items)
+    assert series_dir.exists()
     notifications = runtime_store.list_notifications_after(0)
-    assert [item.event_kind for item in notifications] == ["job_apply_succeeded"]
-    assert notifications[0].severity == "warning"
+    assert [item.event_kind for item in notifications] == ["job_request_rejected"]
+    assert notifications[0].severity == "error"
     assert notifications[0].title == "Aninamer: 测试动画"
-    assert notifications[0].message == "S01E01 | 视频: 1 | 字幕: 1"
+    assert notifications[0].message == "请求被拒绝：legacy apply is disabled until Operation/PathEvent/DestinationReservation safety chain is implemented"
     notification_lines = notifications[0].markdown.splitlines()
     assert notification_lines[:2] == [
         r"*Aninamer: 测试动画*",
-        r"S01E01 \| 视频: 1 \| 字幕: 1",
+        r"请求被拒绝：legacy apply is disabled until Operation/PathEvent/DestinationReservation safety chain is implemented",
     ]
-    assert len(notification_lines) == 3
-    assert "测试动画" in notification_lines[2]
-    assert notifications[0].payload == {"finalize_status": "deleted"}
+    assert notifications[0].payload == {
+        "request_action": "apply_job",
+        "job_id": job.id,
+        "error_message": (
+            "legacy apply is disabled until Operation/PathEvent/"
+            "DestinationReservation safety chain is implemented"
+        ),
+    }
     assert notifications[0].delivery_status == "disabled"
 
 
@@ -457,6 +494,15 @@ def test_worker_failed_job_is_persisted_for_restart(
     assert notifications[0].payload["error_stage"] == "plan"
     assert notifications[0].delivery_status == "disabled"
     assert "fail" not in notifications[0].message.casefold()
+    llm_failures = runtime_store.list_llm_failures(job.id)
+    assert [item.stage for item in llm_failures] == [
+        "episode_mapping",
+        "episode_mapping",
+        "episode_mapping",
+    ]
+    assert [item.attempt for item in llm_failures] == [1, 2, 3]
+    assert all("e1" in item.raw_reply for item in llm_failures)
+    assert all("exceeds season 1 count 1" in item.error_message for item in llm_failures)
 
 
 def test_worker_clears_failed_job_after_fail_path_is_removed(
@@ -611,11 +657,11 @@ def test_worker_apply_failure_creates_notification(
 
     worker.scan_once()
     job = runtime_store.list_jobs()[0]
-    plan_payload = runtime_store.load_artifact(job.id, "plan")
-    assert plan_payload is not None
-    plan = rename_plan_from_payload(plan_payload)
-    plan.moves[0].dst.parent.mkdir(parents=True, exist_ok=True)
-    plan.moves[0].dst.write_bytes(b"existing")
+    move_items = runtime_store.list_job_moves(job.id)
+    assert move_items
+    destination = Path(move_items[0].dst)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"existing")
     request = runtime_store.create_job_request(kind="apply_job", target_job_id=job.id)
 
     worker.scan_once()
@@ -624,14 +670,16 @@ def test_worker_apply_failure_creates_notification(
     updated_request = runtime_store.get_job_request(request.id)
     assert updated_job is not None
     assert updated_request is not None
-    assert updated_job.status == "failed"
-    assert updated_request.status == "succeeded"
+    assert updated_job.status == "planned"
+    assert updated_request.status == "rejected"
+    failed_moves = runtime_store.list_job_moves(job.id)
+    assert [item.status for item in failed_moves] == ["proposed", "proposed"]
     notifications = runtime_store.list_notifications_after(0)
-    assert [item.event_kind for item in notifications] == ["job_apply_failed"]
+    assert [item.event_kind for item in notifications] == ["job_request_rejected"]
     assert notifications[0].severity == "error"
     assert notifications[0].title == "Aninamer: 测试动画"
-    assert notifications[0].message == "归档失败：目标文件已存在"
-    assert notifications[0].payload["error_stage"] == "apply"
+    assert notifications[0].message == "请求被拒绝：legacy apply is disabled until Operation/PathEvent/DestinationReservation safety chain is implemented"
+    assert notifications[0].payload["request_action"] == "apply_job"
     assert notifications[0].delivery_status == "disabled"
 
 

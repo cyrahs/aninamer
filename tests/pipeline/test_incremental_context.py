@@ -5,6 +5,8 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
+import pytest
+
 from aninamer.llm_client import ChatMessage
 from aninamer.pipeline import (
     PlanBuildOptions,
@@ -19,7 +21,10 @@ def _write(path: Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
-def test_inspect_existing_episode_inventory_matches_by_tmdb_id(tmp_path: Path) -> None:
+def test_inspect_existing_episode_inventory_matches_by_tmdb_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     output_root = tmp_path / "library"
 
     matched_root = output_root / "旧标题 (2020) {tmdb-123}"
@@ -31,6 +36,19 @@ def test_inspect_existing_episode_inventory_matches_by_tmdb_id(tmp_path: Path) -
 
     unmatched_root = output_root / "别的标题 (2020) {tmdb-999}"
     _write(unmatched_root / "S01" / "别的标题 S01E01.mkv", b"other")
+    _write(output_root / ".env", b"secret")
+    _write(matched_root / "S01" / ".env.mkv", b"secret-video")
+    _write(matched_root / "S01" / ".envrc.mkv", b"secret-video")
+    _write(matched_root / ".envlocal" / "S01" / "秘密 S01E02.mkv", b"secret-dir")
+    _write(matched_root / ".env.d" / "S01" / "秘密 S01E02.mkv", b"secret-dir")
+    original_stat = Path.stat
+
+    def guarded_stat(self: Path, *args, **kwargs):  # noqa: ANN202
+        if self.name.startswith(".env"):
+            raise AssertionError(f"stat called for sensitive env file: {self}")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", guarded_stat)
 
     inventory = inspect_existing_episode_inventory(output_root, 123)
 

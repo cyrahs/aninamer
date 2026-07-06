@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Sequence
+from typing import Callable, Sequence
 
 from aninamer.diagnostics import logger as diagnostics_logger
 from aninamer.errors import LLMOutputError, OpenAIError
@@ -15,6 +15,7 @@ from aninamer.prompts import (
 from aninamer.tmdb_client import TvSearchResult
 
 logger = logging.getLogger(__name__)
+LLMFailureCallback = Callable[[int, str, Exception], None]
 
 
 def _candidate_to_log(candidate: TvSearchResult) -> dict[str, object]:
@@ -94,6 +95,7 @@ def resolve_tmdb_search_title_with_llm(
     llm: LLMClient,
     *,
     max_attempts: int = 3,
+    on_invalid_reply: LLMFailureCallback | None = None,
 ) -> str:
     if max_attempts < 1:
         raise ValueError("max_attempts must be >= 1")
@@ -108,19 +110,32 @@ def resolve_tmdb_search_title_with_llm(
     for attempt in range(1, max_attempts + 1):
         try:
             response = llm.chat(messages, temperature=0.0, max_output_tokens=4096)
-            diagnostics_logger.info(
-                "tmdb_title_clean_llm_output: dirname=%s attempt=%s/%s raw_output=%s",
-                dirname,
+        except OpenAIError as exc:
+            if attempt >= max_attempts:
+                raise
+            logger.warning(
+                "tmdb_resolve: title_retry attempt=%s/%s error=%s",
                 attempt,
                 max_attempts,
-                response,
+                exc,
             )
-            logger.debug("tmdb_resolve: title_raw_llm_output=%s", response)
+            continue
 
+        diagnostics_logger.info(
+            "tmdb_title_clean_llm_output: dirname=%s attempt=%s/%s raw_output=%s",
+            dirname,
+            attempt,
+            max_attempts,
+            response,
+        )
+        logger.debug("tmdb_resolve: title_raw_llm_output=%s", response)
+        try:
             title = parse_tmdb_search_title(response)
             logger.info("tmdb_resolve: title_selected=%s", title)
             return title
-        except (OpenAIError, LLMOutputError) as exc:
+        except LLMOutputError as exc:
+            if on_invalid_reply is not None:
+                on_invalid_reply(attempt, response, exc)
             if attempt >= max_attempts:
                 raise
             logger.warning(
@@ -140,6 +155,7 @@ def resolve_tmdb_tv_id_with_llm(
     *,
     max_candidates: int = 5,
     max_attempts: int = 3,
+    on_invalid_reply: LLMFailureCallback | None = None,
 ) -> int:
     candidate_list = list(candidates)
     if not candidate_list:
@@ -184,20 +200,33 @@ def resolve_tmdb_tv_id_with_llm(
     for attempt in range(1, max_attempts + 1):
         try:
             response = llm.chat(messages, temperature=0.0, max_output_tokens=4096)
-            diagnostics_logger.info(
-                "tmdb_id_select_llm_output: dirname=%s attempt=%s/%s allowed_ids=%s raw_output=%s",
-                dirname,
+        except OpenAIError as exc:
+            if attempt >= max_attempts:
+                raise
+            logger.warning(
+                "tmdb_resolve: llm_retry attempt=%s/%s error=%s",
                 attempt,
                 max_attempts,
-                sorted(allowed_ids),
-                response,
+                exc,
             )
-            logger.debug("tmdb_resolve: raw_llm_output=%s", response)
+            continue
 
+        diagnostics_logger.info(
+            "tmdb_id_select_llm_output: dirname=%s attempt=%s/%s allowed_ids=%s raw_output=%s",
+            dirname,
+            attempt,
+            max_attempts,
+            sorted(allowed_ids),
+            response,
+        )
+        logger.debug("tmdb_resolve: raw_llm_output=%s", response)
+        try:
             selected_id = parse_selected_tmdb_tv_id(response, allowed_ids=allowed_ids)
             logger.info("tmdb_resolve: selected id=%s", selected_id)
             return selected_id
-        except (OpenAIError, LLMOutputError) as exc:
+        except LLMOutputError as exc:
+            if on_invalid_reply is not None:
+                on_invalid_reply(attempt, response, exc)
             if attempt >= max_attempts:
                 raise
             logger.warning(

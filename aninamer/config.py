@@ -62,7 +62,6 @@ class WatchRootConfig:
 
 @dataclass(frozen=True)
 class AppConfig:
-    log_path: Path
     database: DatabaseConfig
     tmdb: TmdbConfig
     openai: OpenAISettings
@@ -144,11 +143,6 @@ def load_config(path: Path | None = None) -> AppConfig:
         data = tomllib.load(handle)
     if not isinstance(data, dict):
         raise ValueError("config must be a TOML object")
-
-    log_path_raw = data.get("log_path", "./logs")
-    if not isinstance(log_path_raw, str) or not log_path_raw.strip():
-        raise ValueError("log_path must be a non-empty string")
-    log_path = Path(log_path_raw)
 
     database_data = data.get("database")
     if not isinstance(database_data, dict):
@@ -294,7 +288,6 @@ def load_config(path: Path | None = None) -> AppConfig:
         )
 
     return AppConfig(
-        log_path=log_path,
         database=DatabaseConfig(postgres_dsn=postgres_dsn.strip()),
         tmdb=TmdbConfig(api_key=tmdb_api_key, timeout=tmdb_timeout),
         openai=OpenAISettings(

@@ -11,7 +11,7 @@ from typing import Callable, Sequence
 from aninamer.apply import ApplyResult, apply_rename_plan
 from aninamer.config import TmdbConfig
 from aninamer.diagnostics import logger as diagnostics_logger
-from aninamer.episode_mapping import map_episodes_with_llm
+from aninamer.episode_mapping import EpisodeMappingResult, map_episodes_with_llm
 from aninamer.errors import LLMOutputError, OpenAIError
 from aninamer.llm_client import LLMClient
 from aninamer.name_clean import build_tmdb_query_variants, extract_tmdb_id_tag
@@ -20,8 +20,8 @@ from aninamer.plan import (
     build_rename_plan,
     format_season_folder,
 )
-from aninamer.scanner import VIDEO_EXTS, scan_series_dir
-from aninamer.tmdb_client import SeasonDetails, TMDBClient, TvSearchResult
+from aninamer.scanner import VIDEO_EXTS, ScanResult, is_env_file_name, scan_series_dir
+from aninamer.tmdb_client import SeasonDetails, TMDBClient, TvDetails, TvSearchResult
 from aninamer.tmdb_resolve import (
     resolve_tmdb_search_title_with_llm,
     resolve_tmdb_tv_id_with_llm,
@@ -62,6 +62,22 @@ class ReleasedEpisodeContext:
     filtered_episodes: tuple[dict[str, object], ...]
 
 
+@dataclass(frozen=True)
+class PlanBuildResult:
+    plan: RenamePlan
+    scan: ScanResult
+    tmdb_candidates: tuple[TvSearchResult, ...]
+    tmdb_details: TvDetails
+    season_episode_counts: dict[int, int]
+    regular_seasons_zh: dict[int, SeasonDetails]
+    regular_seasons_en: dict[int, SeasonDetails]
+    specials_zh: SeasonDetails | None
+    specials_en: SeasonDetails | None
+    mapping: EpisodeMappingResult
+    existing_inventory: ExistingEpisodeInventory
+    filtered_episodes: tuple[dict[str, object], ...]
+
+
 def tmdb_client_from_env() -> TMDBClient:
     api_key = os.getenv("TMDB_API_KEY", "").strip()
     if not api_key:
@@ -92,6 +108,8 @@ def _find_existing_series_dirs_by_tmdb_id(output_root: Path, tmdb_id: int) -> tu
 
     matches: list[Path] = []
     for path in output_root.iterdir():
+        if is_env_file_name(path.name):
+            continue
         if not path.is_dir():
             continue
         try:
@@ -266,9 +284,7 @@ def inspect_existing_episode_inventory(
     existing_s00_files: set[str] = set()
 
     for series_dir in matched_series_dirs:
-        for path in series_dir.rglob("*"):
-            if not path.is_file():
-                continue
+        for path in _iter_inventory_video_files(series_dir):
             if path.suffix.lower() not in VIDEO_EXTS:
                 continue
             parsed_slot = _parse_existing_episode_slot(path.name)
@@ -295,11 +311,36 @@ def inspect_existing_episode_inventory(
     )
 
 
+def _iter_inventory_video_files(root: Path) -> tuple[Path, ...]:
+    files: list[Path] = []
+    for current_root, dirs, names in os.walk(
+        root,
+        followlinks=False,
+        onerror=_raise_walk_error,
+    ):
+        dirs[:] = [name for name in dirs if not is_env_file_name(name)]
+        root_path = Path(current_root)
+        for name in names:
+            if is_env_file_name(name):
+                continue
+            if Path(name).suffix.lower() not in VIDEO_EXTS:
+                continue
+            path = root_path / name
+            if path.is_file():
+                files.append(path)
+    return tuple(sorted(files, key=lambda path: path.as_posix()))
+
+
+def _raise_walk_error(exc: OSError) -> None:
+    raise exc
+
+
 def search_tmdb_candidates(
     tmdb: TMDBClient,
     name: str,
     *,
     llm_title_factory: Callable[[], LLMClient] | None = None,
+    llm_title_failure_recorder: Callable[[int, str, Exception], None] | None = None,
 ) -> list[TvSearchResult]:
     queries = build_tmdb_query_variants(name)
     languages = ["zh-CN", "en-US", "ja-JP"]
@@ -373,7 +414,11 @@ def search_tmdb_candidates(
 
     llm = llm_title_factory()
     try:
-        llm_title = resolve_tmdb_search_title_with_llm(name, llm)
+        llm_title = resolve_tmdb_search_title_with_llm(
+            name,
+            llm,
+            on_invalid_reply=llm_title_failure_recorder,
+        )
     except (OpenAIError, LLMOutputError) as exc:
         raise ValueError(
             f"no TMDB results for name '{name}' (attempted queries: {queries})"
@@ -405,15 +450,17 @@ def search_tmdb_candidates(
     )
 
 
-def build_rename_plan_for_series(
+def build_rename_plan_result_for_series(
     *,
     series_dir: Path,
     output_root: Path,
     options: PlanBuildOptions,
+    explicit_tmdb_id: int | None = None,
     tmdb_client_factory: Callable[[], TMDBClient] | None = None,
     llm_for_tmdb_id_factory: Callable[[], LLMClient] | None = None,
     llm_for_mapping_factory: Callable[[], LLMClient] | None = None,
-) -> RenamePlan:
+    llm_failure_recorder: Callable[[str, int, str, str], None] | None = None,
+) -> PlanBuildResult:
     scan = scan_series_dir(series_dir)
     if tmdb_client_factory is None:
         raise ValueError("tmdb_client_factory is required")
@@ -421,7 +468,15 @@ def build_rename_plan_for_series(
 
     tag_tmdb_id = extract_tmdb_id_tag(series_dir.name)
     tmdb_id = None
-    if tag_tmdb_id is not None:
+    candidates: list[TvSearchResult] = []
+    if explicit_tmdb_id is not None:
+        tmdb_id = explicit_tmdb_id
+        logger.info(
+            "tmdb_resolve: using explicit id=%s dirname=%s",
+            tmdb_id,
+            series_dir.name,
+        )
+    elif tag_tmdb_id is not None:
         tmdb_id = tag_tmdb_id
         logger.info("tmdb_resolve: using tag id=%s dirname=%s", tmdb_id, series_dir.name)
     else:
@@ -429,6 +484,10 @@ def build_rename_plan_for_series(
             tmdb,
             series_dir.name,
             llm_title_factory=llm_for_tmdb_id_factory,
+            llm_title_failure_recorder=_llm_failure_callback(
+                llm_failure_recorder,
+                "tmdb_title",
+            ),
         )
         diagnostics_logger.info(
             "tmdb_resolve_candidates: series_dir=%s candidates=%s",
@@ -451,6 +510,10 @@ def build_rename_plan_for_series(
                 candidates=candidates,
                 llm=llm_for_id,
                 max_candidates=options.max_candidates,
+                on_invalid_reply=_llm_failure_callback(
+                    llm_failure_recorder,
+                    "tmdb_id",
+                ),
             )
 
     if tmdb_id is None:
@@ -530,8 +593,12 @@ def build_rename_plan_for_series(
         existing_s00_files=existing_inventory.existing_s00_files,
         llm=llm_for_mapping,
         max_output_tokens=options.max_output_tokens,
+        on_invalid_reply=_llm_failure_callback(
+            llm_failure_recorder,
+            "episode_mapping",
+        ),
     )
-    return build_rename_plan(
+    plan = build_rename_plan(
         scan=scan,
         mapping=mapping,
         series_name_zh_cn=series_name_zh_cn,
@@ -540,6 +607,56 @@ def build_rename_plan_for_series(
         output_root=output_root,
         allow_existing_dest=options.allow_existing_dest,
     )
+    return PlanBuildResult(
+        plan=plan,
+        scan=scan,
+        tmdb_candidates=tuple(candidates),
+        tmdb_details=details,
+        season_episode_counts=released_context.season_episode_counts,
+        regular_seasons_zh=released_context.regular_seasons_zh,
+        regular_seasons_en=released_context.regular_seasons_en,
+        specials_zh=released_context.specials_zh,
+        specials_en=released_context.specials_en,
+        mapping=mapping,
+        existing_inventory=existing_inventory,
+        filtered_episodes=released_context.filtered_episodes,
+    )
+
+
+def build_rename_plan_for_series(
+    *,
+    series_dir: Path,
+    output_root: Path,
+    options: PlanBuildOptions,
+    explicit_tmdb_id: int | None = None,
+    tmdb_client_factory: Callable[[], TMDBClient] | None = None,
+    llm_for_tmdb_id_factory: Callable[[], LLMClient] | None = None,
+    llm_for_mapping_factory: Callable[[], LLMClient] | None = None,
+    llm_failure_recorder: Callable[[str, int, str, str], None] | None = None,
+) -> RenamePlan:
+    return build_rename_plan_result_for_series(
+        series_dir=series_dir,
+        output_root=output_root,
+        options=options,
+        explicit_tmdb_id=explicit_tmdb_id,
+        tmdb_client_factory=tmdb_client_factory,
+        llm_for_tmdb_id_factory=llm_for_tmdb_id_factory,
+        llm_for_mapping_factory=llm_for_mapping_factory,
+        llm_failure_recorder=llm_failure_recorder,
+    ).plan
+
+
+def _llm_failure_callback(
+    recorder: Callable[[str, int, str, str], None] | None,
+    stage: str,
+) -> Callable[[int, str, Exception], None] | None:
+    if recorder is None:
+        return None
+
+    def _record(attempt: int, raw_reply: str, exc: Exception) -> None:
+        recorder(stage, attempt, raw_reply, f"{type(exc).__name__}: {exc}")
+
+    return _record
 
 
 def execute_apply(

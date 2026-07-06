@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import logging
+import os
 from pathlib import Path
 import re
 import threading
@@ -10,8 +12,6 @@ import time
 from typing import Callable, Literal
 
 from aninamer.artifacts import (
-    rename_plan_from_payload,
-    rename_plan_to_payload,
     rename_result_to_payload,
 )
 from aninamer.config import AppConfig, WatchRootConfig
@@ -33,14 +33,33 @@ from aninamer.openai_llm_client import (
     openai_llm_from_settings,
 )
 from aninamer.pipeline import (
+    PlanBuildResult,
     PlanBuildOptions,
-    build_rename_plan_for_series,
+    build_rename_plan_result_for_series,
     execute_apply,
     tmdb_client_from_settings,
 )
-from aninamer.plan import RenamePlan
-from aninamer.store import JobRecord, JobRequestRecord, NotificationRecord, RuntimeStore
-from aninamer.tmdb_client import TMDBClient, build_poster_image_url
+from aninamer.plan import PlannedMove, RenamePlan
+from aninamer.scanner import (
+    SKIP_DIR_NAMES,
+    SUBTITLE_EXTS,
+    VIDEO_EXTS,
+    FileCandidate,
+    is_env_file_name,
+)
+from aninamer.store import (
+    JobMoveRecord,
+    JobRecord,
+    JobRequestRecord,
+    NotificationRecord,
+    RuntimeStore,
+)
+from aninamer.tmdb_client import (
+    SeasonDetails,
+    TMDBClient,
+    TvSearchResult,
+    build_poster_image_url,
+)
 from aninamer.webhook_delivery import (
     WebhookTransport,
     response_error_text,
@@ -135,6 +154,10 @@ class AninamerWorker:
         if config.notifications is None and config.notifications_warning is not None:
             logger.warning(config.notifications_warning)
 
+    @property
+    def config(self) -> AppConfig:
+        return self._config
+
     def runtime_summary(self) -> WorkerRuntimeSummary:
         snapshot = self._store.snapshot()
         return WorkerRuntimeSummary(
@@ -143,6 +166,35 @@ class AninamerWorker:
             settle_seconds=self._config.worker.settle_seconds,
             scan_interval_seconds=self._config.worker.scan_interval_seconds,
             watch_root_keys=tuple(item.key for item in self._targets),
+        )
+
+    def build_rematch_preview(
+        self,
+        job: JobRecord,
+        *,
+        tmdb_id: int,
+    ) -> PlanBuildResult:
+        return build_rename_plan_result_for_series(
+            series_dir=Path(job.series_dir),
+            output_root=Path(job.output_root),
+            options=PlanBuildOptions(
+                max_candidates=self._config.worker.max_candidates,
+                max_output_tokens=self._config.worker.max_output_tokens,
+                allow_existing_dest=self._config.worker.allow_existing_dest,
+            ),
+            explicit_tmdb_id=tmdb_id,
+            tmdb_client_factory=self._tmdb_client_factory,
+            llm_for_tmdb_id_factory=self._llm_for_tmdb_id_factory,
+            llm_for_mapping_factory=self._llm_for_mapping_factory,
+            llm_failure_recorder=(
+                lambda stage, attempt, raw_reply, error_message: self._record_llm_failure(
+                    job.id,
+                    stage,
+                    attempt,
+                    raw_reply,
+                    error_message,
+                )
+            ),
         )
 
     def health_status(self) -> WorkerHealthStatus:
@@ -327,17 +379,16 @@ class AninamerWorker:
                 self._notify_job_request_rejected(rejected)
                 return
 
-            self._store.update_job(
-                job.id,
-                status="apply_requested",
-                error_stage=None,
-                error_message=None,
-            )
-            self._store.update_job_request(
+            rejected = self._store.update_job_request(
                 started.id,
-                status="succeeded",
+                status="rejected",
                 finished_at=_now_iso(),
+                error_message=(
+                    "legacy apply is disabled until Operation/PathEvent/"
+                    "DestinationReservation safety chain is implemented"
+                ),
             )
+            self._notify_job_request_rejected(rejected)
         except Exception as exc:
             failed = self._store.update_job_request(
                 started.id,
@@ -465,7 +516,7 @@ class AninamerWorker:
             error_message=None,
         )
         try:
-            plan = build_rename_plan_for_series(
+            plan_result = build_rename_plan_result_for_series(
                 series_dir=series_dir,
                 output_root=target.output_root,
                 options=PlanBuildOptions(
@@ -476,11 +527,21 @@ class AninamerWorker:
                 tmdb_client_factory=self._tmdb_client_factory,
                 llm_for_tmdb_id_factory=self._llm_for_tmdb_id_factory,
                 llm_for_mapping_factory=self._llm_for_mapping_factory,
+                llm_failure_recorder=(
+                    lambda stage, attempt, raw_reply, error_message: self._record_llm_failure(
+                        job.id,
+                        stage,
+                        attempt,
+                        raw_reply,
+                        error_message,
+                    )
+                ),
             )
-            self._store.save_artifact(job.id, "plan", rename_plan_to_payload(plan))
+            plan = plan_result.plan
+            move_records = self._store.replace_job_moves(job.id, plan.moves)
             video_count, subtitle_count = _count_moves(plan)
             diagnostics_logger.info(
-                "worker_plan_artifact_saved: job_id=%s tmdb_id=%s moves=%s video_moves=%s subtitle_moves=%s",
+                "worker_plan_moves_saved: job_id=%s tmdb_id=%s moves=%s video_moves=%s subtitle_moves=%s",
                 job.id,
                 plan.tmdb_id,
                 len(plan.moves),
@@ -488,17 +549,31 @@ class AninamerWorker:
                 subtitle_count,
             )
             if video_count + subtitle_count == 0:
+                job = self._store.update_job(
+                    job.id,
+                    series_name=plan.series_name_zh_cn,
+                    tmdb_id=plan.tmdb_id,
+                    video_moves_count=video_count,
+                    subtitle_moves_count=subtitle_count,
+                )
                 raise PlanValidationError("rename plan contains no moves")
+            self._store.save_review_snapshot(
+                job.id,
+                **_review_snapshot_from_plan_result(plan_result, move_records),
+            )
             updated_job = self._store.update_job(
                 job.id,
-                status="apply_requested" if self._config.worker.auto_apply else "planned",
+                status="planned",
                 series_name=plan.series_name_zh_cn,
                 tmdb_id=plan.tmdb_id,
                 video_moves_count=video_count,
                 subtitle_moves_count=subtitle_count,
             )
-            if updated_job.status == "apply_requested":
-                logger.info("worker: auto_apply_requested job_id=%s", updated_job.id)
+            if self._config.worker.auto_apply:
+                logger.warning(
+                    "worker: auto_apply_disabled_pending_operation_safety job_id=%s",
+                    updated_job.id,
+                )
         except Exception as exc:
             if _is_transient_exception(exc):
                 self._retry_job_after_transient_error(
@@ -512,12 +587,9 @@ class AninamerWorker:
             self._fail_job(job, stage="plan", exc=exc)
 
     def _apply_job(self, job: JobRecord) -> None:
-        payload = self._store.load_artifact(job.id, "plan")
-        if payload is None:
-            self._fail_job(job, stage="apply", exc=ValueError("plan artifact missing"))
-            return
-
         series_dir = Path(job.series_dir)
+        self._reject_legacy_apply(job)
+        return
         self._store.update_job(
             job.id,
             status="applying",
@@ -526,7 +598,7 @@ class AninamerWorker:
             error_message=None,
         )
         try:
-            plan = rename_plan_from_payload(payload)
+            plan = _rename_plan_from_job_moves(job, self._store.list_job_moves(job.id))
             before_files = snapshot_series_files(series_dir)
             diagnostics_logger.info(
                 "worker_apply_start: job_id=%s series_dir=%s before_file_count=%s",
@@ -534,15 +606,11 @@ class AninamerWorker:
                 series_dir,
                 len(before_files),
             )
+            self._store.update_job_moves_for_job(job.id, status="applying")
             execution = execute_apply(
                 plan,
                 dry_run=False,
                 two_stage=self._config.worker.two_stage,
-            )
-            self._store.save_artifact(
-                job.id,
-                "rollback",
-                rename_plan_to_payload(execution.rollback_plan),
             )
             finalize = finalize_series_dir_after_apply(
                 series_dir,
@@ -555,6 +623,12 @@ class AninamerWorker:
                 finalize.status,
                 finalize.archive_path,
                 execution.applied_count,
+            )
+            self._store.update_job_moves_for_job(
+                job.id,
+                status="moved",
+                error_message=None,
+                applied_at=_now_iso(),
             )
             self._store.save_artifact(
                 job.id,
@@ -578,6 +652,12 @@ class AninamerWorker:
             self._notify_job_apply_succeeded(updated_job, finalize.status)
         except Exception as exc:
             if _is_transient_exception(exc):
+                self._store.update_job_moves_for_job(
+                    job.id,
+                    status="proposed",
+                    error_message=f"{type(exc).__name__}: {exc}",
+                    applied_at=None,
+                )
                 self._retry_job_after_transient_error(
                     job,
                     retry_status="apply_requested",
@@ -586,7 +666,35 @@ class AninamerWorker:
                     exc=exc,
                 )
                 return
+            self._store.update_job_moves_for_job(
+                job.id,
+                status="failed",
+                error_message=f"{type(exc).__name__}: {exc}",
+                applied_at=None,
+            )
             self._fail_job(job, stage="apply", exc=exc)
+
+    def _reject_legacy_apply(self, job: JobRecord) -> None:
+        message = (
+            "legacy apply is disabled until Operation/PathEvent/"
+            "DestinationReservation safety chain is implemented"
+        )
+        logger.warning("worker: legacy_apply_rejected job_id=%s", job.id)
+        self._store.update_job_moves_for_job(
+            job.id,
+            status="failed",
+            error_message=message,
+            applied_at=None,
+        )
+        updated_job = self._store.update_job(
+            job.id,
+            status="failed",
+            error_stage="apply",
+            error_message=message,
+            finished_at=_now_iso(),
+            fail_path=None,
+        )
+        self._notify_job_apply_failed(updated_job)
 
     def _retry_job_after_transient_error(
         self,
@@ -698,6 +806,31 @@ class AninamerWorker:
             if item.key == key:
                 return item
         raise KeyError(key)
+
+    def _record_llm_failure(
+        self,
+        job_id: int,
+        stage: str,
+        attempt: int,
+        raw_reply: str,
+        error_message: str,
+    ) -> None:
+        try:
+            self._store.record_llm_failure(
+                job_id=job_id,
+                stage=stage,
+                attempt=attempt,
+                raw_reply=raw_reply,
+                error_message=error_message,
+            )
+        except Exception as exc:
+            logger.warning(
+                "worker: llm_failure_record_failed job_id=%s stage=%s attempt=%s error=%s",
+                job_id,
+                stage,
+                attempt,
+                exc,
+            )
 
     def _deliver_due_notifications(self) -> None:
         notifications = self._store.list_due_notifications(limit=MAX_NOTIFICATION_BATCH)
@@ -852,14 +985,11 @@ class AninamerWorker:
     def _load_notification_plan(self, job: JobRecord | None) -> RenamePlan | None:
         if job is None:
             return None
-        payload = self._store.load_artifact(job.id, "plan")
-        if payload is None:
-            return None
         try:
-            return rename_plan_from_payload(payload)
+            return _rename_plan_from_job_moves(job, self._store.list_job_moves(job.id))
         except Exception as exc:
             logger.warning(
-                "worker: notification_plan_load_failed job_id=%s error=%s",
+                "worker: notification_moves_load_failed job_id=%s error=%s",
                 job.id,
                 exc,
             )
@@ -887,6 +1017,406 @@ def _count_moves(plan: RenamePlan) -> tuple[int, int]:
     video_count = sum(1 for move in plan.moves if move.kind == "video")
     subtitle_count = sum(1 for move in plan.moves if move.kind == "subtitle")
     return video_count, subtitle_count
+
+
+def _review_snapshot_from_plan_result(
+    result: PlanBuildResult,
+    move_records: list[JobMoveRecord],
+) -> dict[str, object]:
+    episode_targets, subtitle_links = _review_snapshot_targets_and_links(
+        result,
+        move_records,
+    )
+    return {
+        "source_files": _review_snapshot_source_files(result),
+        "selected_tmdb_info": _review_snapshot_tmdb_info(result),
+        "episode_targets": episode_targets,
+        "subtitle_links": subtitle_links,
+        "mapping_attempts": [
+            {
+                "id": 1,
+                "stage": "episode_mapping",
+                "created_by": "worker",
+                "tmdb_id": result.plan.tmdb_id,
+                "status": "succeeded",
+                "mapped_video_count": len(result.mapping.items),
+                "mapped_subtitle_count": sum(
+                    len(item.subtitle_ids) for item in result.mapping.items
+                ),
+            }
+        ],
+        "mapping_evidence": _review_snapshot_mapping_evidence(result),
+        "path_event_summary": {
+            "status": "not_started",
+            "pending_count": 0,
+            "incomplete_count": 0,
+        },
+        "validation_summary": {
+            "status": "planned",
+            "season_episode_counts": result.season_episode_counts,
+            "filtered_unreleased_episodes": list(result.filtered_episodes),
+        },
+    }
+
+
+def _review_snapshot_targets_and_links(
+    result: PlanBuildResult,
+    move_records: list[JobMoveRecord],
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    moves_by_source_id = {move.src_id: move for move in move_records}
+    episode_targets: list[dict[str, object]] = []
+    subtitle_links: list[dict[str, object]] = []
+    for target_id, item in enumerate(result.mapping.items, start=1):
+        video_move = moves_by_source_id.get(item.video_id)
+        episode_target = {
+            "id": target_id,
+            "video_source_id": item.video_id,
+            "season": item.season,
+            "episode_start": item.episode_start,
+            "episode_end": item.episode_end,
+            "status": "proposed",
+            "manual": False,
+            "created_by": "llm_mapping",
+            "move_item_ids": [video_move.id] if video_move is not None else [],
+            "subtitle_link_ids": [],
+        }
+        link_ids: list[int] = []
+        for subtitle_id in item.subtitle_ids:
+            subtitle_move = moves_by_source_id.get(subtitle_id)
+            link_id = len(subtitle_links) + 1
+            link_ids.append(link_id)
+            subtitle_links.append(
+                {
+                    "id": link_id,
+                    "episode_target_id": target_id,
+                    "subtitle_source_id": subtitle_id,
+                    "variant_detected": _subtitle_variant_from_move(subtitle_move),
+                    "variant_override": None,
+                    "status": "proposed",
+                    "created_by": "llm_mapping",
+                    "move_item_id": (
+                        subtitle_move.id if subtitle_move is not None else None
+                    ),
+                }
+            )
+        episode_target["subtitle_link_ids"] = link_ids
+        episode_targets.append(episode_target)
+    return episode_targets, subtitle_links
+
+
+def _review_snapshot_source_files(result: PlanBuildResult) -> list[dict[str, object]]:
+    series_dir = result.scan.series_dir
+    moves_by_source_id = {move.src_id: move for move in result.plan.moves}
+    known_rel_paths: set[str] = set()
+    known_ids: set[int] = set()
+    items: list[dict[str, object]] = []
+    for candidate in result.scan.videos:
+        known_rel_paths.add(candidate.rel_path)
+        known_ids.add(candidate.id)
+        items.append(
+            _review_snapshot_candidate_source_file(
+                series_dir,
+                candidate,
+                kind="video",
+                planned=candidate.id in moves_by_source_id,
+            )
+        )
+    for candidate in result.scan.subtitles:
+        known_rel_paths.add(candidate.rel_path)
+        known_ids.add(candidate.id)
+        items.append(
+            _review_snapshot_candidate_source_file(
+                series_dir,
+                candidate,
+                kind="subtitle",
+                planned=candidate.id in moves_by_source_id,
+            )
+        )
+    for path in _iter_review_snapshot_files(series_dir):
+        rel_path = path.relative_to(series_dir).as_posix()
+        if rel_path in known_rel_paths:
+            continue
+        ext = path.suffix.lower()
+        if ext in VIDEO_EXTS or ext in SUBTITLE_EXTS:
+            kind = "video" if ext in VIDEO_EXTS else "subtitle"
+            ignored_reason = None
+        else:
+            kind = "ignored"
+            ignored_reason = "unsupported_extension"
+        source_id = _snapshot_source_id(rel_path)
+        while source_id in known_ids:
+            source_id += 1
+        known_ids.add(source_id)
+        try:
+            stat_result = path.stat()
+            size_bytes: int | None = stat_result.st_size
+            mtime_ns: int | None = stat_result.st_mtime_ns
+        except OSError:
+            size_bytes = None
+            mtime_ns = None
+        items.append(
+            {
+                "id": source_id,
+                "kind": kind,
+                "original_path": _snapshot_path_ref(
+                    path,
+                    root_kind="source",
+                    root=series_dir,
+                ),
+                "current_path": _snapshot_path_ref(
+                    path,
+                    root_kind="source",
+                    root=series_dir,
+                ),
+                "current_path_kind": "source",
+                "ext": path.suffix,
+                "file_identity": {
+                    "identity_strength": (
+                        "weak" if size_bytes is not None else "missing"
+                    ),
+                    "size_bytes": size_bytes,
+                    "mtime_ns": mtime_ns,
+                    "content_hash": None,
+                },
+                "detected_subtitle_variant": (
+                    "unknown" if kind == "subtitle" else None
+                ),
+                "final_disposition": "original",
+                "ignored_reason": ignored_reason,
+            }
+        )
+    items.sort(
+        key=lambda item: (
+            item["original_path"].get("rel_path", "")
+            if isinstance(item["original_path"], dict)
+            else ""
+        )
+    )
+    return items
+
+
+def _review_snapshot_candidate_source_file(
+    series_dir: Path,
+    candidate: FileCandidate,
+    *,
+    kind: Literal["video", "subtitle"],
+    planned: bool,
+) -> dict[str, object]:
+    path = series_dir / candidate.rel_path
+    try:
+        stat_result = path.stat()
+        mtime_ns: int | None = stat_result.st_mtime_ns
+    except OSError:
+        mtime_ns = None
+    return {
+        "id": candidate.id,
+        "kind": kind,
+        "original_path": _snapshot_path_ref(path, root_kind="source", root=series_dir),
+        "current_path": _snapshot_path_ref(path, root_kind="source", root=series_dir),
+        "current_path_kind": "source",
+        "ext": candidate.ext,
+        "file_identity": {
+            "identity_strength": "weak",
+            "size_bytes": candidate.size_bytes,
+            "mtime_ns": mtime_ns,
+            "content_hash": None,
+        },
+        "detected_subtitle_variant": "unknown" if kind == "subtitle" else None,
+        "final_disposition": "planned_output" if planned else "original",
+        "ignored_reason": None,
+    }
+
+
+def _review_snapshot_tmdb_info(result: PlanBuildResult) -> dict[str, object]:
+    details = result.tmdb_details
+    return {
+        "selected_tmdb_id": result.plan.tmdb_id,
+        "title_zh_cn": result.plan.series_name_zh_cn,
+        "original_name": details.original_name,
+        "year": details.year,
+        "candidates": [
+            _tmdb_candidate_snapshot(candidate)
+            for candidate in result.tmdb_candidates
+        ],
+        "seasons": [
+            {
+                "season_number": season.season_number,
+                "episode_count": season.episode_count,
+            }
+            for season in details.seasons
+        ],
+        "specials": _season_details_snapshot(result.specials_zh),
+    }
+
+
+def _tmdb_candidate_snapshot(candidate: TvSearchResult) -> dict[str, object]:
+    return {
+        "id": candidate.id,
+        "name": candidate.name,
+        "original_name": candidate.original_name,
+        "first_air_date": candidate.first_air_date,
+        "year": candidate.year,
+        "origin_country": list(candidate.origin_country or ()),
+        "popularity": candidate.popularity,
+        "vote_count": candidate.vote_count,
+    }
+
+
+def _season_details_snapshot(
+    season: SeasonDetails | None,
+) -> list[dict[str, object]]:
+    if season is None:
+        return []
+    return [
+        {
+            "season_number": season.season_number,
+            "episode_number": episode.episode_number,
+            "name": episode.name,
+            "overview": episode.overview,
+            "air_date": episode.air_date,
+        }
+        for episode in season.episodes
+    ]
+
+
+def _review_snapshot_mapping_evidence(
+    result: PlanBuildResult,
+) -> list[dict[str, object]]:
+    evidence: list[dict[str, object]] = []
+    for idx, item in enumerate(result.mapping.items, start=1):
+        if item.episode_start == item.episode_end:
+            target = f"S{item.season:02d}E{item.episode_start:02d}"
+        else:
+            target = (
+                f"S{item.season:02d}E{item.episode_start:02d}"
+                f"-E{item.episode_end:02d}"
+            )
+        evidence.append(
+            {
+                "id": idx,
+                "episode_target_id": idx,
+                "source_file_id": item.video_id,
+                "evidence_kind": "llm_episode_mapping",
+                "summary": (
+                    f"LLM mapped video source {item.video_id} to {target} "
+                    f"with {len(item.subtitle_ids)} subtitle(s)."
+                ),
+                "confidence": "unknown",
+                "uncertainty_reason": None,
+                "candidate_refs": [
+                    {"kind": "tmdb", "id": result.plan.tmdb_id},
+                    {"kind": "video_source", "id": item.video_id},
+                ],
+            }
+        )
+        for subtitle_id in item.subtitle_ids:
+            evidence.append(
+                {
+                    "id": len(evidence) + 1,
+                    "episode_target_id": idx,
+                    "source_file_id": subtitle_id,
+                    "evidence_kind": "llm_subtitle_link",
+                    "summary": (
+                        f"LLM linked subtitle source {subtitle_id} to {target}."
+                    ),
+                    "confidence": "unknown",
+                    "uncertainty_reason": None,
+                    "candidate_refs": [
+                        {"kind": "video_source", "id": item.video_id},
+                        {"kind": "subtitle_source", "id": subtitle_id},
+                    ],
+                }
+            )
+    return evidence
+
+
+def _subtitle_variant_from_move(move: JobMoveRecord | None) -> str:
+    if move is None:
+        return "unknown"
+    for part in Path(move.dst).stem.split("."):
+        normalized = part.casefold()
+        if normalized in {"chs", "cht", "chi"}:
+            return normalized
+    return "unknown"
+
+
+def _iter_review_snapshot_files(series_dir: Path) -> list[Path]:
+    files: list[Path] = []
+    for root, dirs, names in os.walk(series_dir, followlinks=False):
+        dirs[:] = [
+            name
+            for name in dirs
+            if name.casefold() not in SKIP_DIR_NAMES and not is_env_file_name(name)
+        ]
+        root_path = Path(root)
+        for name in names:
+            if is_env_file_name(name):
+                continue
+            path = root_path / name
+            if path.is_file():
+                files.append(path)
+    return sorted(files, key=lambda item: item.relative_to(series_dir).as_posix())
+
+
+def _snapshot_source_id(rel_path: str) -> int:
+    digest = int(hashlib.sha256(rel_path.casefold().encode()).hexdigest()[:8], 16)
+    return 1_000_000_000 + digest
+
+
+def _snapshot_path_ref(
+    path: Path,
+    *,
+    root_kind: str,
+    root: Path,
+) -> dict[str, object]:
+    normalized = str(path.resolve(strict=False))
+    try:
+        rel_path = str(path.resolve(strict=False).relative_to(root.resolve(strict=False)))
+    except ValueError:
+        rel_path = path.name
+    return {
+        "root_kind": root_kind,
+        "root_id": f"{root_kind}:default:1",
+        "rel_path": rel_path,
+        "display_path": str(path),
+        "normalized_abs_path": normalized,
+        "realpath": normalized,
+        "casefold_key": normalized.casefold(),
+        "redacted": False,
+    }
+
+
+def _rename_plan_from_job_moves(
+    job: JobRecord,
+    moves: list[JobMoveRecord],
+) -> RenamePlan:
+    if not moves:
+        raise ValueError("rename plan contains no moves")
+    if job.tmdb_id is None:
+        raise ValueError("job tmdb_id is required")
+
+    planned_moves: list[PlannedMove] = []
+    for move in moves:
+        kind = move.kind
+        if kind not in ("video", "subtitle"):
+            raise ValueError(f"unsupported move kind {kind}")
+        planned_moves.append(
+            PlannedMove(
+                src=Path(move.src),
+                dst=Path(move.dst),
+                kind=kind,
+                src_id=move.src_id,
+            )
+        )
+
+    return RenamePlan(
+        tmdb_id=job.tmdb_id,
+        series_name_zh_cn=job.series_name,
+        year=None,
+        series_dir=Path(job.series_dir),
+        output_root=Path(job.output_root),
+        moves=tuple(planned_moves),
+    )
 
 
 def _now_or_existing(value: str | None) -> str:
@@ -1137,8 +1667,6 @@ def _notification_failure_reason(error_message: str | None) -> str:
         return "无法创建输出目录"
     if "failed to create temp dir" in lowered:
         return "无法创建临时目录"
-    if "plan artifact missing" in lowered:
-        return "缺少归档计划"
     if "rename plan contains no moves" in lowered:
         return "归档计划为空"
     if "no tmdb results" in lowered:

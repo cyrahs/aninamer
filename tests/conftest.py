@@ -143,7 +143,10 @@ def runtime_store(postgres_dsn: str) -> RuntimeStore:
     with psycopg.connect(postgres_dsn, autocommit=True) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "TRUNCATE TABLE notifications, job_artifacts, job_requests, jobs "
+                "TRUNCATE TABLE subtitle_link_evidence, mapping_evidence, "
+                "mapping_attempts, destination_reservations, path_events, "
+                "operation_item_results, operations, notifications, llm_failures, "
+                "job_artifacts, job_move_items, job_requests, jobs "
                 "RESTART IDENTITY CASCADE"
             )
             cur.execute("UPDATE runtime_state SET last_scan_at = NULL WHERE id = 1")
@@ -178,7 +181,6 @@ def integration_tmdb_settings() -> TmdbConfig:
 @pytest.fixture
 def app_config(tmp_path: Path, postgres_dsn: str) -> AppConfig:
     return AppConfig(
-        log_path=tmp_path / "logs",
         database=DatabaseConfig(postgres_dsn=postgres_dsn),
         tmdb=TmdbConfig(api_key="tmdb-key"),
         openai=OpenAISettings(

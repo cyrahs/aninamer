@@ -14,8 +14,6 @@ from aninamer.config import (
 def _write_full_config(path: Path) -> None:
     path.write_text(
         """
-log_path = "./logs"
-
 [database]
 postgres_dsn = "postgresql://aninamer:aninamer@127.0.0.1:5432/aninamer"
 
@@ -60,7 +58,6 @@ def test_load_config_parses_worker_and_watch_roots(tmp_path: Path) -> None:
 
     config = load_config(config_path)
 
-    assert config.log_path == Path("./logs")
     assert config.database.postgres_dsn == (
         "postgresql://aninamer:aninamer@127.0.0.1:5432/aninamer"
     )
@@ -94,8 +91,6 @@ def test_load_config_disables_notifications_when_incomplete(tmp_path: Path) -> N
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
-log_path = "./logs"
-
 [database]
 postgres_dsn = "postgresql://aninamer:aninamer@127.0.0.1:5432/aninamer"
 

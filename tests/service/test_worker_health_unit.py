@@ -27,7 +27,6 @@ class FakeStore:
 
 def _config(tmp_path: Path, *, root_count: int = 1) -> AppConfig:
     return AppConfig(
-        log_path=tmp_path / "logs",
         database=DatabaseConfig(postgres_dsn="postgresql://unused"),
         tmdb=TmdbConfig(api_key="tmdb-key"),
         openai=OpenAISettings(api_key="openai-key", model="gpt-test"),

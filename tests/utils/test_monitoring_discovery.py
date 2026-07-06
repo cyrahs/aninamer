@@ -48,3 +48,15 @@ def test_discover_series_dirs_marks_root_unavailable_when_entries_cannot_stat(
     assert result.unavailable is True
     assert result.error_message is not None
     assert "Transport endpoint is not connected" in result.error_message
+
+
+def test_discover_series_dirs_excludes_archive_fail_and_review_roots(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "archive").mkdir()
+    (tmp_path / "fail").mkdir()
+    (tmp_path / "review").mkdir()
+    show = tmp_path / "ShowA"
+    show.mkdir()
+
+    assert discover_series_dirs(tmp_path) == [show]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi.testclient import TestClient
+from starlette.responses import Response
 
 from aninamer.api import create_app
 from aninamer.config import (
@@ -38,7 +38,6 @@ class DummyWorker:
 
 def _config(tmp_path: Path) -> AppConfig:
     return AppConfig(
-        log_path=tmp_path / "logs",
         database=DatabaseConfig(postgres_dsn="postgresql://unused"),
         tmdb=TmdbConfig(api_key="tmdb-key"),
         openai=OpenAISettings(api_key="openai-key", model="gpt-test"),
@@ -63,11 +62,12 @@ def test_public_healthz_unhealthy_payload_omits_raw_worker_error(tmp_path: Path)
         worker=DummyWorker(),
     )
 
-    with TestClient(app) as client:
-        response = client.get("/healthz")
+    route = next(route for route in app.routes if getattr(route, "path", None) == "/healthz")
+    response = Response()
+    payload_model = route.endpoint(response)
+    payload = payload_model.model_dump(mode="json", exclude_none=True)
 
     assert response.status_code == 503
-    payload = response.json()
     assert payload == {
         "status": "unhealthy",
         "reason": "worker scan is stale",
@@ -79,8 +79,8 @@ def test_public_healthz_unhealthy_payload_omits_raw_worker_error(tmp_path: Path)
             "unavailable_watch_root_count": 1,
         },
     }
-    assert "last_error_message" not in response.text
-    assert "/mnt/cd2" not in response.text
+    assert "last_error_message" not in str(payload)
+    assert "/mnt/cd2" not in str(payload)
 
 
 def test_healthz_openapi_documents_unhealthy_response(tmp_path: Path) -> None:
@@ -90,8 +90,7 @@ def test_healthz_openapi_documents_unhealthy_response(tmp_path: Path) -> None:
         worker=DummyWorker(),
     )
 
-    with TestClient(app) as client:
-        schema = client.get("/openapi.json").json()
+    schema = app.openapi()
 
     health_responses = schema["paths"]["/healthz"]["get"]["responses"]
     assert "503" in health_responses
