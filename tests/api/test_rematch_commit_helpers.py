@@ -40,6 +40,7 @@ from aninamer.api.service import (
     _payload_hash,
     _consumer_chain_digest,
     _review_exclusion_proof,
+    _review_destination,
     _resolve_apply_validation_scope_or_raise,
     _validated_withdraw_check_or_raise,
     _validation_source_files,
@@ -2367,7 +2368,9 @@ def test_rollback_eligibility_returns_withdraw_token_for_moved_items(tmp_path) -
     assert response.token_status == "current"
     assert response.check_token
     assert response.affected_move_items == [context.move.id]
-    assert "/review/" in response.destination_preview[0]["to"]["display_path"]
+    preview_destination = response.destination_preview[0]["to"]["display_path"]
+    assert preview_destination.endswith("/input/review/Show/ep1.mkv")
+    assert context.output_file.name not in preview_destination
 
 
 def test_rollback_eligibility_running_idempotency_key_does_not_recompute(tmp_path) -> None:  # noqa: ANN001
@@ -2515,7 +2518,7 @@ def test_operation_response_redacts_check_and_claim_tokens() -> None:
 
 def test_execute_withdraw_moves_moves_output_to_review_and_records_lifecycle(tmp_path) -> None:  # noqa: ANN001
     context = _withdraw_context(tmp_path)
-    destination = tmp_path / "input" / "review" / "1-301" / context.output_file.name
+    destination = Path(_review_destination(context.job, context.move))
     operation = OperationRecord(
         id=401,
         job_id=context.job.id,
@@ -2602,7 +2605,7 @@ def test_execute_withdraw_moves_moves_output_to_review_and_records_lifecycle(tmp
 
 def test_execute_withdraw_moves_claim_failure_does_not_reset_unowned_moves(tmp_path) -> None:  # noqa: ANN001
     context = _withdraw_context(tmp_path)
-    destination = tmp_path / "input" / "review" / "1-301" / context.output_file.name
+    destination = Path(_review_destination(context.job, context.move))
     operation = OperationRecord(
         id=401,
         job_id=context.job.id,
@@ -2652,7 +2655,7 @@ def test_execute_withdraw_moves_claim_failure_does_not_reset_unowned_moves(tmp_p
 def test_execute_withdraw_moves_marks_current_event_failed_when_not_ready(tmp_path) -> None:  # noqa: ANN001
     context = _withdraw_context(tmp_path)
     context.output_file.unlink()
-    destination = tmp_path / "input" / "review" / "1-301" / context.output_file.name
+    destination = Path(_review_destination(context.job, context.move))
     operation = OperationRecord(
         id=401,
         job_id=context.job.id,
@@ -2725,7 +2728,7 @@ def test_withdraw_env_path_rejected_before_stat_and_resolve(tmp_path, monkeypatc
     context = _withdraw_context(tmp_path)
     env_output = tmp_path / "output" / ".env.secret"
     env_move = replace(context.move, dst=str(env_output))
-    destination = tmp_path / "input" / "review" / "1-301" / ".env.secret"
+    destination = Path(_review_destination(context.job, env_move))
     operation = OperationRecord(
         id=401,
         job_id=context.job.id,
@@ -3644,9 +3647,7 @@ def test_withdraw_job_final_check_failure_does_not_move_files(tmp_path) -> None:
         source_files,
         snapshot={},
     )
-    review_destination = (
-        tmp_path / "input" / "review" / "1-301" / context.output_file.name
-    )
+    review_destination = Path(_review_destination(context.job, context.move))
     review_destination.parent.mkdir(parents=True)
     review_destination.write_bytes(b"existing")
 

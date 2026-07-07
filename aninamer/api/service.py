@@ -1711,7 +1711,7 @@ class ApiService:
                 _withdraw_response_payload_from_operation(operation)
             )
         destinations = {
-            move.id: Path(_review_destination(job, move, check_operation.id))
+            move.id: Path(_review_destination(job, move))
             for move in affected
         }
         try:
@@ -4690,7 +4690,7 @@ def _unsupported_restore_eligibility_response_payload(
                     root=Path(job.output_root),
                 ).model_dump(mode="json"),
                 "to": _validation_path_ref(
-                    _review_destination(job, move, operation_id),
+                    _review_destination(job, move),
                     root_kind="review",
                     root=_review_root(job),
                 ).model_dump(mode="json"),
@@ -4734,7 +4734,7 @@ def _withdraw_eligibility_response_payload(
     destination_keys: dict[str, list[int]] = {}
     preview: list[dict[str, object]] = []
     for move in moves:
-        destination = Path(_review_destination(job, move, operation_id))
+        destination = Path(_review_destination(job, move))
         preview.append(
             {
                 "move_item_id": move.id,
@@ -5699,16 +5699,27 @@ def _resolve_scope_or_raise(
     return []
 
 
-def _review_destination(
-    job: JobRecord,
-    move: JobMoveRecord,
-    operation_id: int,
-) -> str:
+def _review_destination(job: JobRecord, move: JobMoveRecord) -> str:
     return str(
         _review_root(job)
-        / f"{job.id}-{operation_id}"
-        / Path(move.dst).name
+        / _review_series_folder(job)
+        / _review_source_rel_path(job, move)
     )
+
+
+def _review_series_folder(job: JobRecord) -> str:
+    return Path(job.series_dir).name or f"job-{job.id}"
+
+
+def _review_source_rel_path(job: JobRecord, move: JobMoveRecord) -> Path:
+    source = Path(move.src)
+    try:
+        rel_path = source.relative_to(Path(job.series_dir))
+    except ValueError:
+        rel_path = Path(source.name)
+    if not rel_path.parts or any(part in {"", ".", ".."} for part in rel_path.parts):
+        return Path(source.name or f"source-{move.src_id}")
+    return rel_path
 
 
 def _build_episode_targets(moves: list[JobMoveRecord]) -> list[ReviewEpisodeTarget]:
