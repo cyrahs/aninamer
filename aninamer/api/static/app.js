@@ -89,6 +89,24 @@ const UI_LABELS = {
   added: "新增",
   unchanged: "未变化",
   summary: "摘要",
+  status: "状态",
+  blocking: "阻塞",
+  warnings: "警告",
+  unmapped: "未匹配视频",
+  orphanSubs: "未关联字幕",
+  tmdb: "TMDB",
+  title: "标题",
+  candidates: "候选",
+  seasons: "季",
+  specials: "特别篇",
+  watcher: "监控",
+  proof: "证明",
+  token: "Token",
+  validation: "验证",
+  checked: "已检查",
+  hint: "提示",
+  last: "上次检查",
+  mode: "模式",
   corrections: "修正",
   review_safety_check: "安全检查",
   rollback_eligibility: "回撤资格",
@@ -163,6 +181,7 @@ const els = {
   confirmCancel: document.querySelector("#confirmCancel"),
   confirmClose: document.querySelector("#confirmClose"),
   confirmProceed: document.querySelector("#confirmProceed"),
+  tabButtonRematch: document.querySelector("#tabButtonRematch"),
 };
 
 els.apiToken.value = state.token;
@@ -399,7 +418,15 @@ function renderReview() {
   }
   els.jobTitle.textContent = review.job.series_name;
   const loading = state.detailLoadingJobId === review.job.id;
-  els.jobMeta.textContent = `job ${review.job.id} · ${labelFor(review.job.status)} · rev ${review.review_revision}${loading ? " · 刷新中" : ""}`;
+  els.jobMeta.textContent = [
+    `job ${review.job.id}`,
+    labelFor(review.job.status),
+    `审查 ${review.review_revision}`,
+    `匹配 ${review.versions.mapping_version}`,
+    `计划 ${review.versions.move_plan_version}`,
+    `状态 ${review.versions.move_state_revision}`,
+    loading ? "刷新中" : "",
+  ].filter(Boolean).join(" · ");
   els.refreshReview.disabled = loading;
   const actionBusy = isActionBusy();
   const safetyForJob =
@@ -427,12 +454,21 @@ function renderReview() {
     Boolean(checkRollbackReason),
     checkRollbackReason,
   );
-  els.validateApply.disabled =
-    state.validateChecking ||
-    actionBusy ||
-    !review.move_items.some((item) => item.status === "proposed");
-  els.previewRematch.disabled =
-    actionBusy;
+  const proposedMoveCount = review.move_items.filter(
+    (item) => item.status === "proposed",
+  ).length;
+  const validateReason =
+    state.validateChecking
+      ? "正在验证"
+      : actionBusy
+        ? "等待当前操作完成后再验证"
+        : !proposedMoveCount
+          ? "没有待处理移动项可验证"
+          : "";
+  setButtonState(els.validateApply, Boolean(validateReason), validateReason);
+  const previewReason =
+    actionBusy ? "等待当前操作完成后再预览重匹配" : "";
+  setButtonState(els.previewRematch, Boolean(previewReason), previewReason);
   const previewForJob =
     state.rematchPreview?.jobId === review.job.id ? state.rematchPreview.result : null;
   const preferredTmdbId =
@@ -480,11 +516,17 @@ function renderReview() {
     warnings: validationForJob?.warning_items?.length || 0,
   });
   renderValidationDetails(validationForJob);
-  els.applyValidated.disabled =
-    actionBusy ||
-    state.validateChecking ||
-    !validationForJob ||
-    validationForJob.status !== "valid";
+  const applyReason =
+    actionBusy
+      ? "等待当前操作完成后再应用"
+      : state.validateChecking
+        ? "等待验证完成"
+        : !validationForJob
+          ? "需先运行全量验证"
+          : validationForJob.status !== "valid"
+            ? "验证未通过"
+            : "";
+  setButtonState(els.applyValidated, Boolean(applyReason), applyReason);
   const rollbackForJob =
     state.rollbackEligibility?.jobId === review.job.id
       ? state.rollbackEligibility.result
@@ -545,12 +587,24 @@ function renderReview() {
   renderRematchPreview(
     previewForJob
   );
-  els.commitRematch.disabled =
-    actionBusy ||
-    !previewForJob;
-  els.submitCorrection.disabled =
-    actionBusy ||
-    !review.move_items.every((item) => item.status === "proposed");
+  const commitRematchReason =
+    actionBusy
+      ? "等待当前操作完成后再提交预览"
+      : !previewForJob
+        ? "需先生成重匹配预览"
+        : "";
+  setButtonState(
+    els.commitRematch,
+    Boolean(commitRematchReason),
+    commitRematchReason,
+  );
+  const correctionReason =
+    actionBusy
+      ? "等待当前操作完成后再提交修正"
+      : !review.move_items.every((item) => item.status === "proposed")
+        ? "只有待处理计划可手动修正"
+        : "";
+  setButtonState(els.submitCorrection, Boolean(correctionReason), correctionReason);
 }
 
 function isWriteBusy() {
@@ -1533,6 +1587,7 @@ async function previewRematch() {
       return;
     }
     state.rematchPreview = { jobId, result };
+    activateTab(els.tabButtonRematch);
     await loadJobDetail(jobId, {
       preserveRollback: true,
       preserveRematch: true,
@@ -1999,7 +2054,7 @@ function renderDefinitionList(target, data) {
   target.replaceChildren();
   for (const [key, value] of Object.entries(data)) {
     const dt = document.createElement("dt");
-    dt.textContent = key;
+    dt.textContent = labelFor(key);
     const dd = document.createElement("dd");
     dd.textContent = labelFor(value);
     target.append(dt, dd);
@@ -2065,7 +2120,11 @@ function pill(text, mode = "") {
 function pathCell(ref) {
   const span = document.createElement("span");
   span.className = "path";
-  span.textContent = ref?.display_path || ref?.rel_path || "-";
+  const text = ref?.display_path || ref?.rel_path || "-";
+  span.textContent = text;
+  if (text !== "-") {
+    span.title = text;
+  }
   return span;
 }
 

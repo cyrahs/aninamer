@@ -4678,10 +4678,11 @@ def test_frontend_confirmation_dialog_markup_matches_script() -> None:
         assert f'querySelector("#{element_id}")' in source
 
 
-def test_frontend_renders_rollback_gate_flow_in_rollback_card() -> None:
+def test_frontend_renders_rollback_gate_flow_in_operation_rail() -> None:
     html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
     source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
-    rollback_start = html.index("<h3>Rollback</h3>")
+    rail_start = html.index('<aside class="operation-rail"')
+    rollback_start = html.index("<h3>回撤</h3>", rail_start)
     flow_start = html.index('id="rollbackFlow"', rollback_start)
     details_start = html.index('id="rollbackDetails"', flow_start)
     rollback_markup = html[rollback_start:details_start]
