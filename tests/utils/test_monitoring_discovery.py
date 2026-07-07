@@ -3,7 +3,11 @@ from __future__ import annotations
 import errno
 from pathlib import Path
 
-from aninamer.monitoring import discover_series_dirs, discover_series_dirs_status
+from aninamer.monitoring import (
+    discover_series_dirs,
+    discover_series_dirs_status,
+    series_dir_contains_candidate_video,
+)
 
 
 def test_discover_series_dirs_returns_empty_when_mount_is_unavailable(
@@ -60,3 +64,34 @@ def test_discover_series_dirs_excludes_archive_fail_and_review_roots(
     show.mkdir()
 
     assert discover_series_dirs(tmp_path) == [show]
+
+
+def test_series_dir_contains_candidate_video_detects_nested_video(
+    tmp_path: Path,
+) -> None:
+    show = tmp_path / "ShowA"
+    (show / "Subs").mkdir(parents=True)
+    (show / "Subs" / "ep1.ass").write_bytes(b"sub")
+    (show / "Season 1").mkdir()
+    (show / "Season 1" / "ep1.mkv").write_bytes(b"video")
+
+    assert series_dir_contains_candidate_video(show) is True
+
+
+def test_series_dir_contains_candidate_video_ignores_empty_and_unsupported_dirs(
+    tmp_path: Path,
+) -> None:
+    empty = tmp_path / "Empty"
+    empty.mkdir()
+    unsupported = tmp_path / "Unsupported"
+    unsupported.mkdir()
+    (unsupported / "poster.jpg").write_bytes(b"image")
+    (unsupported / "notes.nfo").write_bytes(b"notes")
+    (unsupported / "episode.ass").write_bytes(b"sub")
+    ignored = tmp_path / "Ignored"
+    (ignored / "trailer").mkdir(parents=True)
+    (ignored / "trailer" / "preview.mkv").write_bytes(b"video")
+
+    assert series_dir_contains_candidate_video(empty) is False
+    assert series_dir_contains_candidate_video(unsupported) is False
+    assert series_dir_contains_candidate_video(ignored) is False

@@ -99,6 +99,7 @@ def test_worker_discovery_is_isolated_per_watch_root(
     )
     config = replace(app_config, watch_roots=(first_root, second_root))
     discovered = second_root.input_root / "ShowB"
+    _write(discovered / "ep1.mkv", b"video")
 
     def fake_discover(input_root: Path) -> SeriesDiscoveryResult:
         if input_root == first_root.input_root:
@@ -115,6 +116,33 @@ def test_worker_discovery_is_isolated_per_watch_root(
     assert len(jobs) == 1
     assert jobs[0].watch_root_key == "hanime"
     assert jobs[0].series_dir == str(discovered)
+
+
+def test_worker_discovery_skips_dirs_without_candidate_videos(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
+    empty_dir = app_config.watch_roots[0].input_root / "Empty"
+    empty_dir.mkdir(parents=True)
+    unsupported_dir = app_config.watch_roots[0].input_root / "Unsupported"
+    _write(unsupported_dir / "poster.jpg", b"image")
+    _write(unsupported_dir / "episode.ass", b"sub")
+    llm = FakeLLM('{"tmdb":123,"eps":[]}')
+
+    worker = AninamerWorker(
+        app_config,
+        runtime_store,
+        tmdb_client_factory=lambda: FakeTMDBClient(),
+        llm_for_mapping_factory=lambda: llm,
+    )
+
+    worker.scan_once()
+
+    assert runtime_store.list_jobs() == []
+    assert runtime_store.list_notifications_after(0) == []
+    assert llm.calls == 0
+    assert empty_dir.exists()
+    assert unsupported_dir.exists()
 
 
 def test_worker_run_forever_continues_after_scan_exception(

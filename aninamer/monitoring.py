@@ -9,7 +9,7 @@ import time
 from typing import Literal
 
 from aninamer.plan import RenamePlan
-from aninamer.scanner import SKIP_DIR_NAMES, is_env_file_name
+from aninamer.scanner import SKIP_DIR_NAMES, VIDEO_EXTS, is_env_file_name
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +150,46 @@ def discover_series_dirs_status(input_root: Path) -> SeriesDiscoveryResult:
             error_message=unavailable_errors[0],
         )
     return SeriesDiscoveryResult(series_dirs=series_dirs)
+
+
+def series_dir_contains_candidate_video(series_dir: Path) -> bool:
+    try:
+        if not series_dir.exists() or not series_dir.is_dir():
+            return False
+    except OSError as exc:
+        logger.warning(
+            "monitor: candidate_video_check_unavailable series_dir=%s error=%s",
+            series_dir,
+            exc,
+        )
+        raise
+
+    try:
+        walker = os.walk(
+            series_dir,
+            followlinks=False,
+            onerror=_raise_walk_error,
+        )
+        for _root, dirs, names in walker:
+            dirs[:] = [
+                name
+                for name in dirs
+                if name.casefold() not in SKIP_DIR_NAMES
+                and not is_env_file_name(name)
+            ]
+            for name in names:
+                if is_env_file_name(name):
+                    continue
+                if Path(name).suffix.lower() in VIDEO_EXTS:
+                    return True
+    except OSError as exc:
+        logger.warning(
+            "monitor: candidate_video_check_unavailable series_dir=%s error=%s",
+            series_dir,
+            exc,
+        )
+        raise
+    return False
 
 
 def snapshot_series_files(series_dir: Path) -> set[str]:

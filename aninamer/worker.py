@@ -26,6 +26,7 @@ from aninamer.monitoring import (
     max_tree_mtime,
     move_series_dir_to_fail,
     path_is_dir,
+    series_dir_contains_candidate_video,
     snapshot_series_files,
 )
 from aninamer.openai_llm_client import (
@@ -417,6 +418,30 @@ class AninamerWorker:
             series_dirs = discovery.series_dirs
             for series_dir in series_dirs:
                 if self._store.find_active_job_by_series_dir(series_dir) is not None:
+                    continue
+                try:
+                    has_candidate_video = series_dir_contains_candidate_video(series_dir)
+                except OSError as exc:
+                    if is_transient_filesystem_error(exc):
+                        logger.warning(
+                            "worker: source_unavailable_skip_discovery series_dir=%s error=%s",
+                            series_dir,
+                            exc,
+                        )
+                        self._record_watch_root_unavailable(target.key, str(exc))
+                        continue
+                    logger.exception(
+                        "worker: candidate_video_check_failed series_dir=%s",
+                        series_dir,
+                    )
+                    self._record_watch_root_unavailable(target.key, str(exc))
+                    continue
+                if not has_candidate_video:
+                    diagnostics_logger.info(
+                        "worker_skip_discovered_dir_without_candidate_video: watch_root_key=%s series_dir=%s",
+                        target.key,
+                        series_dir,
+                    )
                     continue
                 logger.info(
                     "worker: discovered series_dir=%s watch_root_key=%s",
