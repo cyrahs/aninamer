@@ -2037,17 +2037,17 @@ class ApiService:
             id=move.id,
             source_id=move.src_id,
             kind=move.kind,
-            source_path=_validation_path_ref(
+            source_path=_display_path_ref(
                 move.src,
                 root_kind="source",
                 root=Path(job.series_dir),
             ),
-            planned_destination_path=_validation_path_ref(
+            planned_destination_path=_display_path_ref(
                 move.dst,
                 root_kind="output",
                 root=Path(job.output_root),
             ),
-            current_path=_validation_path_ref(
+            current_path=_display_path_ref(
                 current_path,
                 root_kind=current_path_kind,
                 root=(
@@ -3809,14 +3809,19 @@ def _source_file_from_move(job: JobRecord, move: JobMoveRecord) -> ReviewSourceF
     return ReviewSourceFile(
         id=move.src_id,
         kind=move.kind,
-        original_path=_validation_path_ref(
+        original_path=_display_path_ref(
             move.src,
             root_kind="source",
             root=Path(job.series_dir),
         ),
-        current_path=_validation_path_ref(
+        current_path=_display_path_ref(
             current_path,
             root_kind=current_path_kind,
+            root=(
+                Path(job.output_root)
+                if current_path_kind == "output"
+                else Path(job.series_dir)
+            ),
         ),
         current_path_kind=current_path_kind,
         ext=Path(move.src).suffix,
@@ -3870,6 +3875,46 @@ def _validation_path_ref(
         realpath=None,
         casefold_key=None,
         redacted=True,
+    )
+
+
+def _display_path_ref(
+    path: str | Path,
+    *,
+    root_kind: str,
+    root: Path | None = None,
+) -> PathRef:
+    """Build a review-only PathRef without touching the filesystem."""
+    raw_path = Path(path)
+    rel_path = raw_path.name
+    if root is not None:
+        try:
+            rel_path = raw_path.relative_to(root).as_posix()
+        except ValueError:
+            rel_path = raw_path.name
+    if _path_has_env_component(raw_path) or (
+        root is not None and _path_has_env_component(root)
+    ):
+        return PathRef(
+            root_kind=root_kind,
+            root_id=f"{root_kind}:default:1",
+            rel_path=rel_path,
+            display_path=str(raw_path),
+            normalized_abs_path=None,
+            realpath=None,
+            casefold_key=None,
+            redacted=True,
+        )
+    normalized = str(raw_path)
+    return PathRef(
+        root_kind=root_kind,
+        root_id=f"{root_kind}:default:1",
+        rel_path=rel_path,
+        display_path=normalized,
+        normalized_abs_path=normalized,
+        realpath=None,
+        casefold_key=normalized.casefold(),
+        redacted=False,
     )
 
 

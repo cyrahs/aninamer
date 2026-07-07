@@ -631,6 +631,35 @@ def test_review_revision_guard_excludes_current_and_preview_operations() -> None
     assert exc_info.value.code == "stale_versions"
 
 
+def test_review_display_models_do_not_resolve_paths(monkeypatch) -> None:  # noqa: ANN001
+    def _unexpected_resolve(self, *, strict=False):  # noqa: ANN001, ARG001
+        raise AssertionError("review display path refs must not resolve paths")
+
+    monkeypatch.setattr(Path, "resolve", _unexpected_resolve)
+    job = replace(
+        _job("/mnt/cd2/115/emby/anime"),
+        series_dir="/mnt/cd2/115/emby_in/anime/Show",
+    )
+    move = _move(
+        10,
+        1,
+        "video",
+        "/mnt/cd2/115/emby_in/anime/Show/ep1.mkv",
+        "/mnt/cd2/115/emby/anime/Show (2024) {tmdb-1}/S01/Show S01E01.mkv",
+    )
+
+    item = ApiService.model_review_move_item(job, move)
+    source_files = ApiService.model_review_source_files(job, [move], None)
+
+    assert item.source_path.rel_path == "ep1.mkv"
+    assert item.planned_destination_path.rel_path == (
+        "Show (2024) {tmdb-1}/S01/Show S01E01.mkv"
+    )
+    assert item.current_path.rel_path == "ep1.mkv"
+    assert item.planned_destination_path.realpath is None
+    assert source_files[0].original_path.rel_path == "ep1.mkv"
+
+
 def test_correction_helpers_reject_existing_destinations(tmp_path) -> None:  # noqa: ANN001
     output_root = tmp_path / "output"
     input_root = tmp_path / "input" / "Show"
