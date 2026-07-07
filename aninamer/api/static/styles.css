@@ -47,6 +47,17 @@ button:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
+button.danger-button {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+button.danger-button:hover:not(:disabled) {
+  border-color: #7f1d16;
+  background: #9f1f16;
+}
+
 button:disabled {
   color: #9aa4b2;
   cursor: not-allowed;
@@ -118,7 +129,8 @@ dt,
 
 .toolbar,
 .actions,
-.tab-buttons {
+.tab-buttons,
+.rollback-actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
@@ -169,6 +181,12 @@ dt,
 .job-item.active {
   border-color: var(--accent);
   background: #e9f5f2;
+}
+
+.job-empty {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 12px;
 }
 
 .job-item strong,
@@ -328,6 +346,32 @@ dd {
   background: var(--panel);
 }
 
+.tmdb-candidates {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.tmdb-candidate {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-height: 0;
+  padding: 8px;
+  text-align: left;
+  background: #fbfcfd;
+}
+
+.tmdb-candidate.selected {
+  border-color: var(--accent);
+  background: #eef8f5;
+}
+
+.tmdb-candidate span {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .tab-panel section {
   padding: 12px;
   min-width: 0;
@@ -364,6 +408,39 @@ th {
 
 tr:last-child td {
   border-bottom: 0;
+}
+
+.empty-state {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+}
+
+.clickable-row {
+  cursor: pointer;
+}
+
+.clickable-row:hover td {
+  background: #f6f8fa;
+}
+
+.clickable-row:focus-visible td {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.operation-result summary {
+  cursor: pointer;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.operation-result pre {
+  margin: 8px 0 0;
+  max-width: min(560px, 70vw);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
 }
 
 .pill {
@@ -404,12 +481,90 @@ tr:last-child td {
   margin-top: 10px;
 }
 
+.rollback-flow {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.rollback-step {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfd;
+  padding: 8px;
+}
+
+.rollback-step .step-index {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #edf1f5;
+  color: #405061;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rollback-step div {
+  display: grid;
+  gap: 2px;
+}
+
+.rollback-step strong {
+  font-size: 13px;
+}
+
+.rollback-step span:last-child {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.rollback-step.done {
+  border-color: #b7d8d0;
+  background: #eef8f5;
+}
+
+.rollback-step.done .step-index {
+  background: var(--accent);
+  color: #fff;
+}
+
+.rollback-step.active {
+  border-color: #f1cf91;
+  background: #fff9ed;
+}
+
+.rollback-step.active .step-index {
+  background: #d98713;
+  color: #fff;
+}
+
+.rollback-step.blocked {
+  background: #f5f6f8;
+}
+
 .detail-item {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #fbfcfd;
   padding: 8px;
   overflow-wrap: anywhere;
+}
+
+.detail-item header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.detail-item dl {
+  grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
 }
 
 .rematch-table {
@@ -428,6 +583,66 @@ tr:last-child td {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 6px;
+}
+
+.confirm-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(760px, calc(100vh - 32px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.confirm-dialog::backdrop {
+  background: rgb(23 32 42 / 48%);
+}
+
+.confirm-box {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+}
+
+.confirm-box header,
+.confirm-box footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.confirm-box header h3 {
+  margin: 0;
+}
+
+.confirm-summary {
+  margin: 0;
+  color: var(--muted);
+}
+
+.confirm-details {
+  display: grid;
+  gap: 8px;
+  overflow: auto;
+  max-height: 420px;
+}
+
+.confirm-note,
+.confirm-item {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fbfcfd;
+  padding: 8px;
+}
+
+.confirm-item header {
+  margin-bottom: 6px;
+}
+
+.confirm-item dl {
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
 }
 
 @media (max-width: 980px) {

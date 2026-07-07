@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import re
 from types import SimpleNamespace
 import pytest
 
@@ -4601,3 +4602,1104 @@ def test_frontend_preserves_rollback_and_safety_tokens_across_checks() -> None:
     assert "preserveReviewSafety: true" in safety_body
     assert "preserveRollback: true" in rollback_body
     assert "preserveReviewSafety: true" in rollback_body
+
+
+def test_frontend_requires_confirmation_for_dangerous_actions() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    assert "function confirmDangerousAction" in source
+    for function_name, confirmation_builder, submitting_flag in [
+        ("applyValidated", "applyConfirmation", "applySubmitting"),
+        ("withdrawChecked", "withdrawConfirmation", "withdrawSubmitting"),
+        ("reopenFromReview", "reopenConfirmation", "reopenSubmitting"),
+        ("commitRematch", "rematchCommitConfirmation", "rematchCommitting"),
+    ]:
+        start = source.index(f"async function {function_name}()")
+        next_start = source.find("\\nasync function ", start + 1)
+        body = source[start : next_start if next_start != -1 else len(source)]
+        confirm_index = body.index("await confirmDangerousAction")
+        cancel_guard_index = body.index("if (!confirmed)", confirm_index)
+        submitting_index = body.index(f"state.{submitting_flag} = true")
+        api_index = body.index("api(", submitting_index)
+        assert confirm_index < cancel_guard_index < submitting_index < api_index
+        assert re.search(r"if \(!confirmed\) \{\s*return;\s*\}", body)
+        assert confirmation_builder in body
+    rematch_confirmation = source[
+        source.index("function rematchCommitConfirmation")
+        : source.index("function previewItems")
+    ]
+    assert "current_planned_destination_path" in rematch_confirmation
+    assert "preview_destination_path" in rematch_confirmation
+
+
+def test_frontend_confirmation_dialog_markup_matches_script() -> None:
+    html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    required_ids = [
+        "confirmDialog",
+        "confirmTitle",
+        "confirmSummary",
+        "confirmDetails",
+        "confirmCancel",
+        "confirmClose",
+        "confirmProceed",
+    ]
+    for element_id in required_ids:
+        assert f'id="{element_id}"' in html
+        assert f'querySelector("#{element_id}")' in source
+
+
+def test_frontend_renders_rollback_gate_flow_in_rollback_card() -> None:
+    html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    rollback_start = html.index("<h3>Rollback</h3>")
+    flow_start = html.index('id="rollbackFlow"', rollback_start)
+    details_start = html.index('id="rollbackDetails"', flow_start)
+    rollback_markup = html[rollback_start:details_start]
+    topbar_start = html.index('<section class="topbar">')
+    topbar_end = html.index("</section>", topbar_start)
+    topbar_markup = html[topbar_start:topbar_end]
+
+    for element_id in [
+        "rollbackFlow",
+        "rollbackSafetyStep",
+        "rollbackSafetyStatus",
+        "rollbackEligibilityStep",
+        "rollbackEligibilityStatus",
+        "rollbackExecuteStep",
+        "rollbackExecuteStatus",
+        "checkReviewSafety",
+        "checkRollback",
+        "withdrawChecked",
+        "reopenFromReview",
+    ]:
+        assert f'id="{element_id}"' in rollback_markup
+
+    for element_id in [
+        "rollbackSafetyStep",
+        "rollbackSafetyStatus",
+        "rollbackEligibilityStep",
+        "rollbackEligibilityStatus",
+        "rollbackExecuteStep",
+        "rollbackExecuteStatus",
+        "checkReviewSafety",
+        "checkRollback",
+        "withdrawChecked",
+        "reopenFromReview",
+    ]:
+        assert f'querySelector("#{element_id}")' in source
+
+    for button_id in [
+        "checkReviewSafety",
+        "checkRollback",
+        "withdrawChecked",
+        "reopenFromReview",
+    ]:
+        assert f'id="{button_id}"' not in topbar_markup
+        assert flow_start < html.index(f'id="{button_id}"')
+
+
+def test_frontend_explains_rollback_gate_preconditions() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    render_body = source[
+        source.index("function renderReview()")
+        : source.index("function isWriteBusy()")
+    ]
+
+    assert "function isActionBusy()" in source
+    busy_body = source[
+        source.index("function isActionBusy()")
+        : source.index("function renderRollbackFlow")
+    ]
+    assert "state.validateChecking" in busy_body
+    assert "state.rollbackChecking" in busy_body
+
+    for button_name in [
+        "checkReviewSafety",
+        "checkRollback",
+        "withdrawChecked",
+        "reopenFromReview",
+    ]:
+        assert re.search(rf"setButtonState\(\s*els\.{button_name}", render_body)
+
+    for reason in [
+        "等待当前操作完成后再检查安全",
+        "需先通过安全检查",
+        "没有已移动项目可检查回撤",
+        "需先通过回撤资格检查",
+        "没有 review 记录可重新打开",
+        "等待回撤资格检查完成",
+    ]:
+        assert reason in render_body
+
+    check_rollback_reason = render_body[
+        render_body.index("const checkRollbackReason =")
+        : render_body.index("setButtonState(\n    els.checkRollback")
+    ]
+    assert "!reviewSafetyReady" in check_rollback_reason
+    assert "!review.rollback_capability_hints.has_moved_items" in check_rollback_reason
+    assert re.search(
+        r"setButtonState\(\s*els\.checkRollback,\s*"
+        r"Boolean\(checkRollbackReason\),\s*checkRollbackReason,\s*\)",
+        render_body,
+    )
+
+    withdraw_reason = render_body[
+        render_body.index("const withdrawReason =")
+        : render_body.index("setButtonState(els.withdrawChecked")
+    ]
+    assert "!reviewSafetyReady" in withdraw_reason
+    assert "!rollbackReady" in withdraw_reason
+    assert re.search(
+        r"setButtonState\(\s*els\.withdrawChecked,\s*"
+        r"Boolean\(withdrawReason\),\s*withdrawReason,?\s*\)",
+        render_body,
+    )
+
+    reopen_reason = render_body[
+        render_body.index("const reopenReason =")
+        : render_body.index("setButtonState(els.reopenFromReview")
+    ]
+    assert "!review.rollback_capability_hints.has_review_records" in reopen_reason
+    assert "!reviewSafetyReady" in reopen_reason
+    assert re.search(
+        r"setButtonState\(\s*els\.reopenFromReview,\s*"
+        r"Boolean\(reopenReason\),\s*reopenReason,?\s*\)",
+        render_body,
+    )
+
+    rollback_start = source.index("async function checkRollbackEligibility()")
+    validate_start = source.index("async function validateApply()")
+    rollback_body = source[rollback_start:validate_start]
+    assert "if (!state.review || isActionBusy())" in rollback_body
+    assert 'showNotice("需先通过安全检查", true)' in rollback_body
+
+    for function_name in ["previewRematch", "submitCorrection"]:
+        start = source.index(f"async function {function_name}()")
+        next_start = source.find("\nasync function ", start + 1)
+        body = source[start : next_start if next_start != -1 else len(source)]
+        assert "if (isActionBusy())" in body
+
+    clear_start = source.index("function clearDetail")
+    clear_body = source[clear_start:]
+    assert "setButtonState(els.checkReviewSafety, true)" in clear_body
+    assert "setButtonState(els.checkRollback, true)" in clear_body
+    assert 'els.rollbackSafetyStatus,\n    "未检查"' in clear_body
+    assert 'els.rollbackExecuteStatus,\n    "等待前置条件"' in clear_body
+
+
+def test_frontend_rollback_gate_flow_has_styles() -> None:
+    css = Path("aninamer/api/static/styles.css").read_text(encoding="utf-8")
+
+    for selector in [
+        ".rollback-actions",
+        ".rollback-flow",
+        ".rollback-step",
+        ".rollback-step.done",
+        ".rollback-step.active",
+        ".rollback-step.blocked",
+    ]:
+        assert selector in css
+
+
+def test_frontend_renders_readiness_and_validation_issue_details() -> None:
+    html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    css = Path("aninamer/api/static/styles.css").read_text(encoding="utf-8")
+
+    for element_id in ["readinessDetails", "validationDetails"]:
+        assert f'id="{element_id}"' in html
+        assert f'querySelector("#{element_id}")' in source
+
+    render_body = source[
+        source.index("function renderReview()")
+        : source.index("function isWriteBusy()")
+    ]
+    assert "renderReadinessDetails(review.readiness_summary)" in render_body
+    assert "renderValidationDetails(validationForJob)" in render_body
+
+    readiness_body = source[
+        source.index("function renderReadinessDetails")
+        : source.index("function renderValidationDetails")
+    ]
+    for key in [
+        "affected_refs",
+        "unmapped_videos",
+        "unassociated_subtitles",
+        "ignored_files",
+        "source_file_id",
+        "ignored_reason",
+    ]:
+        assert key in readiness_body
+    assert "optionalPath(item.path)" in readiness_body
+
+    validation_body = source[
+        source.index("function renderValidationDetails")
+        : source.index("function appendValidationProblem")
+    ]
+    assert "validation.blocking_items" in validation_body
+    assert "validation.warning_items" in validation_body
+    assert "appendValidationProblem(\"blocking\", item)" in validation_body
+    assert "appendValidationProblem(\"warning\", item)" in validation_body
+
+    problem_body = source[
+        source.index("function appendValidationProblem")
+        : source.index("function appendDetailItem")
+    ]
+    for field in [
+        "item.message",
+        "item.move_item_id",
+        "item.source_id",
+        "item.move_status",
+        "optionalPath(item.source)",
+        "optionalPath(item.destination)",
+        "formatList(item.conflicting_move_item_ids)",
+    ]:
+        assert field in problem_body
+
+    assert ".detail-item header" in css
+    assert ".detail-item dl" in css
+
+
+def test_frontend_uses_ttl_for_review_and_rollback_tokens() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    render_body = source[
+        source.index("function renderReview()")
+        : source.index("function isWriteBusy()")
+    ]
+
+    for helper in [
+        "function isTimedTokenCurrent",
+        "function tokenLabel",
+        "function tokenRemainingMs",
+        "function tokenExpiryDate",
+        "function scheduleTokenExpiryRender",
+    ]:
+        assert helper in source
+
+    assert 'isTimedTokenCurrent(safetyForJob, "review_safety_check_token")' in render_body
+    assert 'isTimedTokenCurrent(rollbackForJob, "check_token")' in render_body
+    assert "token: tokenLabel(safetyForJob, reviewSafetyReady)" in render_body
+    assert "token: tokenLabel(rollbackForJob, rollbackReady)" in render_body
+    assert "scheduleTokenExpiryRender([safetyForJob, rollbackForJob])" in render_body
+
+    helper_body = source[
+        source.index("function isTimedTokenCurrent")
+        : source.index("function renderRollbackFlow")
+    ]
+    assert "tokenExpired(result)" in helper_body
+    timed_token_body = helper_body[
+        helper_body.index("function isTimedTokenCurrent")
+        : helper_body.index("function tokenLabel")
+    ]
+    assert "const remaining = tokenRemainingMs(result)" in timed_token_body
+    assert "remaining !== null" in timed_token_body
+    assert "remaining > 0" in timed_token_body
+    assert "checked_at" in helper_body
+    assert "ttl_seconds" in helper_body
+    assert "setTimeout" in helper_body
+    assert "stale" in helper_body
+
+    rollback_start = source.index("async function checkRollbackEligibility()")
+    validate_start = source.index("async function validateApply()")
+    rollback_body = source[rollback_start:validate_start]
+    assert 'isTimedTokenCurrent(safetyForJob, "review_safety_check_token")' in rollback_body
+
+    withdraw_start = source.index("async function withdrawChecked()")
+    reopen_start = source.index("async function reopenFromReview()")
+    withdraw_body = source[withdraw_start:reopen_start]
+    confirm_index = withdraw_body.index("await confirmDangerousAction")
+    stale_index = withdraw_body.index("检查已过期，请重新检查", confirm_index)
+    submitting_index = withdraw_body.index("state.withdrawSubmitting = true")
+    assert confirm_index < stale_index < submitting_index
+    stale_block_start = withdraw_body.rindex("if (", 0, stale_index)
+    stale_block = withdraw_body[stale_block_start:submitting_index]
+    assert 'showNotice("检查已过期，请重新检查", true)' in stale_block
+    assert "renderReview();" in stale_block
+    assert re.search(r"return;\s*}", stale_block)
+    assert 'isTimedTokenCurrent(rollbackForJob, "check_token")' in withdraw_body
+    assert (
+        'isTimedTokenCurrent(safetyForJob, "review_safety_check_token")'
+        in withdraw_body
+    )
+
+    commit_start = source.index("async function commitRematch()")
+    reopen_body = source[reopen_start:commit_start]
+    confirm_index = reopen_body.index("await confirmDangerousAction")
+    stale_index = reopen_body.index("安全检查已过期，请重新检查", confirm_index)
+    submitting_index = reopen_body.index("state.reopenSubmitting = true")
+    assert confirm_index < stale_index < submitting_index
+    stale_block_start = reopen_body.rindex("if (", 0, stale_index)
+    stale_block = reopen_body[stale_block_start:submitting_index]
+    assert 'showNotice("安全检查已过期，请重新检查", true)' in stale_block
+    assert "renderReview();" in stale_block
+    assert re.search(r"return;\s*}", stale_block)
+    assert 'isTimedTokenCurrent(safetyForJob, "review_safety_check_token")' in reopen_body
+
+    clear_start = source.index("function clearDetail")
+    clear_body = source[clear_start:]
+    assert "clearTimeout(state.tokenExpiryTimer)" in clear_body
+
+
+def test_frontend_renders_clickable_tmdb_candidates() -> None:
+    html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    css = Path("aninamer/api/static/styles.css").read_text(encoding="utf-8")
+
+    assert 'id="tmdbCandidates"' in html
+    assert 'querySelector("#tmdbCandidates")' in source
+
+    render_body = source[
+        source.index("function renderReview()")
+        : source.index("function isWriteBusy()")
+    ]
+    assert "renderTmdbCandidates(review.selected_tmdb_info)" in render_body
+
+    candidates_body = source[
+        source.index("function renderTmdbCandidates")
+        : source.index("function selectTmdbCandidate")
+    ]
+    for expected in [
+        "info?.candidates",
+        "document.createElement(\"button\")",
+        "tmdb-candidate",
+        "candidate.name",
+        "candidate.original_name",
+        "candidate.first_air_date",
+        "candidate.origin_country",
+        "selectTmdbCandidate(candidate.id)",
+        "els.tmdbCandidates.append(button)",
+    ]:
+        assert expected in candidates_body
+
+    select_body = source[
+        source.index("function selectTmdbCandidate")
+        : source.index("function renderEpisodeRows")
+    ]
+    assert "Number(tmdbId) <= 0" in select_body
+    assert "els.tmdbInput.value = String(tmdbId)" in select_body
+    assert "state.tmdbInputEditedJobId = state.review.job.id" in select_body
+    assert "state.rematchPreview = null" in select_body
+    assert "state.rematchPreviewGeneration += 1" in select_body
+    assert "renderReview()" in select_body
+
+    for selector in [
+        ".tmdb-candidates",
+        ".tmdb-candidate",
+        ".tmdb-candidate.selected",
+    ]:
+        assert selector in css
+
+
+def test_frontend_prefills_manual_correction_from_mapping_rows() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    css = Path("aninamer/api/static/styles.css").read_text(encoding="utf-8")
+
+    episode_rows = source[
+        source.index("function renderEpisodeRows")
+        : source.index("function renderSubtitleRows")
+    ]
+    assert "makeClickableRow" in episode_rows
+    assert "prefillEpisodeCorrection(item)" in episode_rows
+
+    subtitle_rows = source[
+        source.index("function renderSubtitleRows")
+        : source.index("function makeClickableRow")
+    ]
+    assert "makeClickableRow" in subtitle_rows
+    assert "prefillSubtitleCorrection(item)" in subtitle_rows
+
+    clickable_body = source[
+        source.index("function makeClickableRow")
+        : source.index("function prefillEpisodeCorrection")
+    ]
+    assert "tr.tabIndex = 0" in clickable_body
+    assert 'tr.addEventListener("click", callback)' in clickable_body
+    assert "event.key !== \"Enter\" && event.key !== \" \"" in clickable_body
+    assert "callback();" in clickable_body
+
+    episode_prefill = source[
+        source.index("function prefillEpisodeCorrection")
+        : source.index("function prefillSubtitleCorrection")
+    ]
+    for expected in [
+        "els.correctionTargetId.value = item.id",
+        "els.correctionSeason.value = item.season",
+        "els.correctionStart.value = item.episode_start",
+        "els.correctionEnd.value = item.episode_end",
+        "els.correctionSubtitleLinkId.value = \"\"",
+        "els.correctionVariant.value = \"detected\"",
+    ]:
+        assert expected in episode_prefill
+
+    subtitle_prefill = source[
+        source.index("function prefillSubtitleCorrection")
+        : source.index("function renderFileRows")
+    ]
+    for expected in [
+        "els.correctionTargetId.value = \"\"",
+        "els.correctionSeason.value = \"\"",
+        "els.correctionStart.value = \"\"",
+        "els.correctionEnd.value = \"\"",
+        "els.correctionSubtitleLinkId.value = item.id",
+        "item.variant_override || item.variant_detected",
+    ]:
+        assert expected in subtitle_prefill
+
+    assert ".clickable-row" in css
+    assert ".clickable-row:focus-visible" in css
+
+
+def test_frontend_seeds_tmdb_input_once_per_job() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    assert "tmdbInputSeededJobId: null" in source
+    assert "tmdbInputEditedJobId: null" in source
+
+    input_listener = source[
+        source.index('els.tmdbInput.addEventListener("input"')
+        : source.index("document.querySelectorAll(\".tab\")")
+    ]
+    assert "state.tmdbInputEditedJobId = state.review.job.id" in input_listener
+    assert "state.rematchPreview = null" in input_listener
+
+    load_body = source[
+        source.index("async function loadJobDetail")
+        : source.index("function renderReview")
+    ]
+    assert "const previousJobId = state.selectedJobId" in load_body
+    assert "clearDetail({ preserveTmdbInput: previousJobId === jobId })" in load_body
+
+    render_body = source[
+        source.index("function renderReview()")
+        : source.index("function isWriteBusy()")
+    ]
+    seed_block_start = render_body.index("if (\n    state.tmdbInputSeededJobId")
+    seed_block_end = render_body.index("renderDefinitionList(els.readiness", seed_block_start)
+    seed_block = render_body[seed_block_start:seed_block_end]
+    assert "state.tmdbInputSeededJobId !== review.job.id" in seed_block
+    assert "state.tmdbInputEditedJobId !== review.job.id" in seed_block
+    assert "preferredTmdbId" in seed_block
+    assert "els.tmdbInput.value = preferredTmdbId" in seed_block
+    assert "state.tmdbInputSeededJobId = review.job.id" in seed_block
+
+    clear_body = source[source.index("function clearDetail") :]
+    assert "function clearDetail(options = {})" in clear_body
+    assert "if (!options.preserveTmdbInput)" in clear_body
+    assert "state.tmdbInputSeededJobId = null" in clear_body
+    assert "state.tmdbInputEditedJobId = null" in clear_body
+
+
+def test_frontend_keeps_current_detail_visible_during_same_job_refresh() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    assert "detailLoadingJobId: null" in source
+
+    load_body = source[
+        source.index("async function loadJobDetail")
+        : source.index("function renderReview")
+    ]
+    assert (
+        "const keepCurrentDetail = previousJobId === jobId && "
+        "state.review?.job.id === jobId"
+    ) in load_body
+    assert "state.detailLoadingJobId = jobId" in load_body
+    keep_branch_start = load_body.index("if (keepCurrentDetail) {")
+    keep_else_start = load_body.index("} else {", keep_branch_start)
+    keep_branch_end = load_body.index("renderJobs()", keep_else_start)
+    keep_branch = load_body[keep_branch_start:keep_else_start]
+    loading_branch = load_body[keep_else_start:keep_branch_end]
+    assert "renderReview();" in keep_branch
+    assert "clearDetail(" not in keep_branch
+    assert "加载中" not in keep_branch
+    assert "clearDetail({ preserveTmdbInput: previousJobId === jobId })" in loading_branch
+    assert "els.jobTitle.textContent = \"加载中\"" in loading_branch
+    assert "els.refreshReview.disabled = true" in load_body
+    assert "state.detailLoadingJobId = null" in load_body
+
+    catch_start = load_body.index("} catch (error)")
+    catch_body = load_body[catch_start:]
+    catch_keep_start = catch_body.index("if (keepCurrentDetail) {")
+    catch_else_start = catch_body.index("} else {", catch_keep_start)
+    catch_else_end = catch_body.index("showNotice", catch_else_start)
+    catch_keep_branch = catch_body[catch_keep_start:catch_else_start]
+    catch_clear_branch = catch_body[catch_else_start:catch_else_end]
+    assert "renderReview();" in catch_keep_branch
+    assert "clearDetail();" not in catch_keep_branch
+    assert "clearDetail();" in catch_clear_branch
+
+    render_body = source[
+        source.index("function renderReview()")
+        : source.index("function isWriteBusy()")
+    ]
+    assert "const loading = state.detailLoadingJobId === review.job.id" in render_body
+    assert "刷新中" in render_body
+    assert "els.refreshReview.disabled = loading" in render_body
+
+    busy_body = source[
+        source.index("function isActionBusy()")
+        : source.index("function ensureDetailIdle")
+    ]
+    assert "state.detailLoadingJobId !== null" in busy_body
+    ensure_body = source[
+        source.index("function ensureDetailIdle")
+        : source.index("function isTimedTokenCurrent")
+    ]
+    assert "state.detailLoadingJobId === null" in ensure_body
+    idle_block = ensure_body[
+        ensure_body.index("if (state.detailLoadingJobId === null)")
+        : ensure_body.index("showNotice")
+    ]
+    assert "return true;" in idle_block
+    assert "showNotice(message, true)" in ensure_body
+    assert "renderReview()" in ensure_body
+    busy_tail = ensure_body[ensure_body.index("showNotice") :]
+    assert "return false;" in busy_tail
+
+    clear_body = source[source.index("function clearDetail") :]
+    assert "state.detailLoadingJobId = null" in clear_body
+
+
+def test_frontend_action_handlers_fail_closed_while_detail_loads() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+
+    def if_block_containing(body: str, marker: str) -> str:
+        marker_index = body.index(marker)
+        if_start = body.rfind("if", 0, marker_index)
+        brace_start = body.index("{", marker_index)
+        depth = 0
+        for index in range(brace_start, len(body)):
+            char = body[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return body[if_start : index + 1]
+        raise AssertionError(f"could not find if block for {marker}")
+
+    for function_name, first_flag in [
+        ("checkReviewSafety", "state.reviewSafetyChecking = true"),
+        ("checkRollbackEligibility", "state.rollbackChecking = true"),
+        ("validateApply", "state.validateChecking = true"),
+        ("previewRematch", "state.rematchPreviewing = true"),
+        ("submitCorrection", "state.correctionSubmitting = true"),
+    ]:
+        start = source.index(f"async function {function_name}()")
+        next_start = source.find("\nasync function ", start + 1)
+        body = source[start : next_start if next_start != -1 else len(source)]
+        guard_index = body.index("isActionBusy()")
+        flag_index = body.index(first_flag)
+        api_index = body.index("api(")
+        guard_block = if_block_containing(body, "isActionBusy()")
+        assert guard_index < flag_index < api_index
+        assert re.search(r"return;\s*}", guard_block)
+
+    for function_name in [
+        "applyValidated",
+        "withdrawChecked",
+        "reopenFromReview",
+        "commitRematch",
+    ]:
+        start = source.index(f"async function {function_name}()")
+        next_start = source.find("\nasync function ", start + 1)
+        body = source[start : next_start if next_start != -1 else len(source)]
+        guard_index = body.index("isActionBusy()")
+        confirm_index = body.index("await confirmDangerousAction")
+        guard_block = if_block_containing(body, "isActionBusy()")
+        assert guard_index < confirm_index
+        assert re.search(r"return;\s*}", guard_block)
+
+    for function_name, submitting_flag in [
+        ("applyValidated", "applySubmitting"),
+        ("withdrawChecked", "withdrawSubmitting"),
+        ("reopenFromReview", "reopenSubmitting"),
+        ("commitRematch", "rematchCommitting"),
+    ]:
+        start = source.index(f"async function {function_name}()")
+        next_start = source.find("\nasync function ", start + 1)
+        body = source[start : next_start if next_start != -1 else len(source)]
+        confirm_index = body.index("await confirmDangerousAction")
+        ensure_index = body.index("ensureDetailIdle", confirm_index)
+        submitting_index = body.index(f"state.{submitting_flag} = true")
+        ensure_block_start = body.rindex("if", confirm_index, ensure_index)
+        ensure_block = body[ensure_block_start:submitting_index]
+        assert confirm_index < ensure_index < submitting_index
+        assert re.search(
+            r"if \(!ensureDetailIdle\([^)]*\)\) \{\s*return;\s*\}",
+            ensure_block,
+        )
+
+    for function_name in [
+        "checkReviewSafety",
+        "checkRollbackEligibility",
+        "validateApply",
+        "applyValidated",
+        "withdrawChecked",
+        "reopenFromReview",
+        "previewRematch",
+        "commitRematch",
+        "submitCorrection",
+    ]:
+        start = source.index(f"async function {function_name}()")
+        next_start = source.find("\nasync function ", start + 1)
+        body = source[start : next_start if next_start != -1 else len(source)]
+        catch_index = body.index("catch (error)")
+        catch_body = body[catch_index : body.index("finally", catch_index)]
+        assert "state.selectedJobId === jobId" in catch_body
+        assert catch_body.index("state.selectedJobId === jobId") < catch_body.index(
+            "showNotice(error.message, true)"
+        )
+
+
+def test_frontend_operations_tab_formats_time_and_expands_json() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    css = Path("aninamer/api/static/styles.css").read_text(encoding="utf-8")
+
+    render_body = source[
+        source.index("function renderOperations")
+        : source.index("async function checkReviewSafety")
+    ]
+    assert "emptyTableRow(5, \"暂无操作\")" in render_body
+    assert "formatDateTime(item.created_at)" in render_body
+    assert "operationResultCell(item.result_summary)" in render_body
+    assert "compactJson(item.result_summary)" not in render_body
+    assert "item.created_at," not in render_body
+
+    empty_row_body = source[
+        source.index("function emptyTableRow")
+        : source.index("function operationResultCell")
+    ]
+    assert "td.colSpan = colspan" in empty_row_body
+    assert "td.append(empty(text))" in empty_row_body
+
+    result_cell_body = source[
+        source.index("function operationResultCell")
+        : source.index("function formatDateTime")
+    ]
+    for expected in [
+        'document.createElement("details")',
+        'details.className = "operation-result"',
+        'document.createElement("summary")',
+        "summary.textContent = compactJson(value)",
+        'document.createElement("pre")',
+        "pre.textContent = JSON.stringify(value || {}, null, 2)",
+        "details.append(summary, pre)",
+    ]:
+        assert expected in result_cell_body
+    assert "innerHTML" not in result_cell_body
+
+    date_body = source[
+        source.index("function formatDateTime")
+        : source.index("function pill")
+    ]
+    assert "new Date(value)" in date_body
+    assert "Number.isNaN(date.getTime())" in date_body
+    assert "date.toLocaleString()" in date_body
+
+    assert ".operation-result summary" in css
+    assert ".operation-result pre" in css
+
+
+def test_frontend_labels_internal_status_values_for_display() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+
+    labels_body = source[
+        source.index("const UI_LABELS =")
+        : source.index("const els =")
+    ]
+    for raw, label in [
+        ("blocking", "阻塞"),
+        ("proposed", "待处理"),
+        ("moved", "已移动"),
+        ("withdrawn", "已回撤"),
+        ("succeeded", "成功"),
+        ("failed", "失败"),
+        ("current", "当前"),
+        ("stale", "已过期"),
+        ("eligible", "可回撤"),
+        ("withdraw_to_review", "回撤到 review"),
+        ("planned_output", "计划输出"),
+        ("rematch_preview", "重匹配预览"),
+        ("evidence", "证据"),
+        ("llm_episode_mapping", "LLM 剧集匹配"),
+        ("llm_subtitle_link", "LLM 字幕关联"),
+        ("manual_override", "手动修正"),
+        ("rematch_subtitle_preview", "重匹配字幕预览"),
+        ("committed_llm_episode_mapping", "已提交 LLM 剧集匹配"),
+        ("committed_llm_subtitle_link", "已提交 LLM 字幕关联"),
+        ("committed_manual_override", "已提交手动修正"),
+        ("committed_rematch", "已提交重匹配"),
+        ("committed_rematch_preview", "已提交重匹配预览"),
+        ("committed_rematch_subtitle_preview", "已提交重匹配字幕预览"),
+        ("user", "用户确认"),
+        ("unknown", "未知"),
+        ("summary", "摘要"),
+        ("missing", "缺失文件"),
+        ("incomplete", "记录不完整"),
+        ("identity", "身份不匹配"),
+        ("not checked", "未检查"),
+        ("has moved items", "有已移动项目"),
+    ]:
+        assert f"{raw}:" in labels_body or f'"{raw}":' in labels_body
+        assert label in labels_body
+
+    label_body = source[
+        source.index("function labelFor")
+        : source.index("function ensureDetailIdle")
+    ]
+    assert "UI_LABELS[text]" in label_body
+    assert 'text.includes(" · ")' in label_body
+    assert "UI_LABELS[part]" in label_body
+
+    render_jobs = source[
+        source.index("function renderJobs")
+        : source.index("async function loadJobDetail")
+    ]
+    assert "labelFor(job.status)" in render_jobs
+    assert "视频 ${job.video_moves_count}" in render_jobs
+    assert "字幕 ${job.subtitle_moves_count}" in render_jobs
+    assert "job.video_moves_count}/${job.subtitle_moves_count}" not in render_jobs
+
+    render_body = source[
+        source.index("function renderReview()")
+        : source.index("function isWriteBusy()")
+    ]
+    assert "labelFor(review.job.status)" in render_body
+
+    token_body = source[
+        source.index("function tokenLabel")
+        : source.index("function tokenExpired")
+    ]
+    assert "labelFor(status)" in token_body
+    assert "到期" in token_body
+    assert "expires" not in token_body
+
+    definition_body = source[
+        source.index("function renderDefinitionList")
+        : source.index("function row")
+    ]
+    assert "dd.textContent = labelFor(value)" in definition_body
+
+    operations_body = source[
+        source.index("function renderOperations")
+        : source.index("async function checkReviewSafety")
+    ]
+    assert "labelFor(item.type)" in operations_body
+
+    detail_body = source[
+        source.index("function appendDetailItem")
+        : source.index("function renderTmdbCandidates")
+    ]
+    assert "const metaLabel = rawMeta ? labelFor(rawMeta) : \"\"" in detail_body
+    assert "meta.textContent = metaLabel" in detail_body
+    assert "meta.title = String(rawMeta)" in detail_body
+
+    readiness_details_body = source[
+        source.index("function renderReadinessDetails")
+        : source.index("function renderValidationDetails")
+    ]
+    assert "没有阻塞/警告项" in readiness_details_body
+    assert "readiness blocking/warning" not in readiness_details_body
+
+    validation_problem_body = source[
+        source.index("function appendValidationProblem")
+        : source.index("function appendDetailItem")
+    ]
+    assert "[\"类型\", labelFor(item.kind)]" in validation_problem_body
+    assert "[\"移动状态\", labelFor(item.move_status)]" in validation_problem_body
+    assert "验证问题" in validation_problem_body
+    assert "validation problem" not in validation_problem_body
+
+    evidence_body = source[
+        source.index("function renderEvidence")
+        : source.index("function renderOperations")
+    ]
+    assert "pill(item.confidence || \"unknown\")" in evidence_body
+    assert "labelFor(item.evidence_kind || \"evidence\")" in evidence_body
+    assert "innerHTML" not in evidence_body
+
+    file_rows_body = source[
+        source.index("function renderFileRows")
+        : source.index("function renderMoveRows")
+    ]
+    assert "labelFor(item.kind)" in file_rows_body
+
+    move_rows_body = source[
+        source.index("function renderMoveRows")
+        : source.index("function renderEvidence")
+    ]
+    assert "labelFor(item.kind)" in move_rows_body
+
+    rematch_preview_body = source[
+        source.index("function renderRematchPreview")
+        : source.index("function rematchChangeMode")
+    ]
+    assert "labelFor(item.kind)" in rematch_preview_body
+    assert "无变更" in rematch_preview_body
+    assert "no changes" not in rematch_preview_body
+
+    action_notice_body = source[
+        source.index("async function checkReviewSafety")
+        : source.index("function applyConfirmation")
+    ]
+    assert "安全检查：${labelFor(result.status)}" in action_notice_body
+    assert "回撤检查：${labelFor(result.status)}" in action_notice_body
+    assert "应用验证：${labelFor(result.status)}" in action_notice_body
+    assert "应用完成：" in action_notice_body
+    assert "回撤完成：" in action_notice_body
+    assert "重新打开完成：" in action_notice_body
+    assert "重匹配已提交：" in action_notice_body
+    assert "修正已提交：" in action_notice_body
+    for raw_notice in [
+        "review safety:",
+        "rollback check:",
+        "apply validation:",
+        "apply validation is stale",
+        "apply succeeded:",
+        "withdraw succeeded:",
+        "reopened:",
+        "rematch committed:",
+        "correction committed:",
+    ]:
+        assert raw_notice not in action_notice_body
+
+    pill_body = source[
+        source.index("function pill")
+        : source.index("function pathCell")
+    ]
+    assert "const label = labelFor(text)" in pill_body
+    assert "span.textContent = label" in pill_body
+    assert "span.title = String(text)" in pill_body
+
+    confirmation_item_body = source[
+        source.index("function confirmDetailItem")
+        : source.index("function displayPath")
+    ]
+    assert "const metaLabel = rawMeta ? labelFor(rawMeta) : \"\"" in confirmation_item_body
+    assert "meta.textContent = metaLabel" in confirmation_item_body
+    assert "meta.title = String(rawMeta)" in confirmation_item_body
+
+    rollback_details_body = source[
+        source.index("function renderRollbackDetails")
+        : source.index("function renderRematchPreview")
+    ]
+    assert "labelFor(result.mode)" in rollback_details_body
+    assert "labelFor(result.status)" in rollback_details_body
+    assert "labelFor(result.token_status)" in rollback_details_body
+    assert "appendRollbackProblems(\"missing\"" in rollback_details_body
+
+    rollback_problem_body = source[
+        source.index("function appendRollbackProblems")
+        : source.index("function renderDefinitionList")
+    ]
+    assert "labelFor(label)" in rollback_problem_body
+    assert "${label}:" not in rollback_problem_body
+
+    rollback_flow_body = source[
+        source.index("function renderRollbackFlow")
+        : source.index("function setRollbackStep")
+    ]
+    assert "无已移动项目" in rollback_flow_body
+    assert "无 moved 项目" not in rollback_flow_body
+
+    withdraw_confirmation = source[
+        source.index("function withdrawConfirmation")
+        : source.index("function reopenConfirmation")
+    ]
+    assert "模式：" in withdraw_confirmation
+    assert "回撤令牌：" in withdraw_confirmation
+    assert "mode:" not in withdraw_confirmation
+    assert "rollback token" not in withdraw_confirmation
+
+    apply_confirmation = source[
+        source.index("function applyConfirmation")
+        : source.index("function withdrawConfirmation")
+    ]
+    assert "警告：" in apply_confirmation
+    assert "校验版本：" in apply_confirmation
+    assert "warnings:" not in apply_confirmation
+    assert "checked revision:" not in apply_confirmation
+
+    reopen_confirmation = source[
+        source.index("function reopenConfirmation")
+        : source.index("function rematchCommitConfirmation")
+    ]
+    assert "review 记录：" in reopen_confirmation
+    assert '"有" : "无"' in reopen_confirmation
+    assert "移动项" in reopen_confirmation
+    assert "review 目录" in reopen_confirmation
+    assert "计划目标" in reopen_confirmation
+    assert "review records" not in reopen_confirmation
+
+    rematch_confirmation = source[
+        source.index("function rematchCommitConfirmation")
+        : source.index("function previewItems")
+    ]
+    assert "已变更" in rematch_confirmation
+    assert "新增" in rematch_confirmation
+    assert "已移除" in rematch_confirmation
+    assert "预览操作：" in rematch_confirmation
+    assert "移动项" in rematch_confirmation
+    assert "当前计划" in rematch_confirmation
+    assert "预览目标" in rematch_confirmation
+    assert "preview operation" not in rematch_confirmation
+
+    preview_items = source[
+        source.index("function previewItems")
+        : source.index("function confirmationItems")
+    ]
+    assert "移动项" in preview_items
+    assert "源 ID" in preview_items
+    assert "来源" in preview_items
+    assert "目标" in preview_items
+
+
+def test_frontend_renders_empty_states_for_lists_and_tables() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    styles = Path("aninamer/api/static/styles.css").read_text(encoding="utf-8")
+
+    render_jobs = source[
+        source.index("function renderJobs")
+        : source.index("async function loadJobDetail")
+    ]
+    assert "暂无 job，等待扫描" in render_jobs
+    assert "job-empty" in render_jobs
+
+    for function_name, colspan, text in [
+        ("renderEpisodeRows", 5, "暂无 episode target"),
+        ("renderSubtitleRows", 5, "暂无字幕关联"),
+        ("renderFileRows", 6, "暂无源文件"),
+        ("renderMoveRows", 7, "暂无移动项"),
+    ]:
+        body = source[
+            source.index(f"function {function_name}")
+            : source.index("function ", source.index(f"function {function_name}") + 1)
+        ]
+        assert f'emptyTableRow({colspan}, "{text}")' in body
+
+    rematch_body = source[
+        source.index("function renderRematchPreview")
+        : source.index("function rematchChangeMode")
+    ]
+    assert 'emptyTableRow(5, "先生成重匹配预览")' in rematch_body
+    assert 'emptyTableRow(5, "无变更")' in rematch_body
+    assert 'row(["-", "-", "无变更", "-", "-"])' not in rematch_body
+
+    clear_detail_body = source[
+        source.index("function clearDetail")
+        : source.index("function escapeHtml")
+    ]
+    assert "renderNoJobEmptyState()" in clear_detail_body
+    assert "选择 job 后显示" in clear_detail_body
+    assert "els.operationRows.append(emptyTableRow(5, text))" in clear_detail_body
+    assert "els.evidenceList.append(empty(text))" in clear_detail_body
+
+    assert "clearDetail({ preserveTmdbInput: true });" in source
+    assert 'node.className = "empty-state muted"' in source
+    assert ".empty-state" in styles
+    assert ".job-empty" in styles
+
+
+def test_frontend_sets_tab_and_notice_accessibility_state() -> None:
+    html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+
+    assert 'id="notice" class="notice hidden" role="status" aria-live="polite"' in html
+    assert 'role="tablist"' in html
+    for tab_name, button_id, selected in [
+        ("mapping", "tabButtonMapping", True),
+        ("files", "tabButtonFiles", False),
+        ("moves", "tabButtonMoves", False),
+        ("rematch", "tabButtonRematch", False),
+        ("evidence", "tabButtonEvidence", False),
+        ("operations", "tabButtonOperations", False),
+    ]:
+        button_start = html.index(f'<button id="{button_id}"')
+        button = html[button_start : html.index("</button>", button_start)]
+        assert 'role="tab"' in button
+        assert f'aria-controls="tab-{tab_name}"' in button
+        assert f'aria-selected="{str(selected).lower()}"' in button
+        if selected:
+            assert 'class="tab active"' in button
+            assert 'tabindex="-1"' not in button
+        else:
+            assert 'class="tab"' in button
+            assert 'tabindex="-1"' in button
+
+        panel_start = html.index(f'<div id="tab-{tab_name}"')
+        panel = html[panel_start : html.index(">", panel_start) + 1]
+        assert 'role="tabpanel"' in panel
+        assert f'aria-labelledby="{button_id}"' in panel
+
+    tab_body = source[
+        source.index("const tabButtons =")
+        : source.index("async function api")
+    ]
+    assert "activateTab(button)" in tab_body
+    assert "handleTabKeydown(event, button)" in tab_body
+    assert 'item.setAttribute("aria-selected", selected ? "true" : "false")' in tab_body
+    assert "item.tabIndex = selected ? 0 : -1" in tab_body
+    assert "panel?.classList.toggle(\"active\", selected)" in tab_body
+    assert 'event.key === "ArrowRight"' in tab_body
+    assert 'event.key === "ArrowLeft"' in tab_body
+    assert 'event.key === "Home"' in tab_body
+    assert 'event.key === "End"' in tab_body
+
+    notice_body = source[
+        source.index("function showNotice")
+        : source.index("function clearDetail")
+    ]
+    assert 'els.notice.setAttribute("role", error ? "alert" : "status")' in notice_body
+    assert 'els.notice.setAttribute("aria-live", error ? "assertive" : "polite")' in notice_body
+    assert notice_body.index('els.notice.setAttribute("role", error ? "alert" : "status")') < notice_body.index("els.notice.textContent = message")
+    assert notice_body.index('els.notice.setAttribute("aria-live", error ? "assertive" : "polite")') < notice_body.index("els.notice.textContent = message")
+    assert notice_body.index('els.notice.classList.remove("hidden")') < notice_body.index("els.notice.textContent = message")
+    assert 'els.notice.setAttribute("role", "status")' in notice_body
+    assert 'els.notice.setAttribute("aria-live", "polite")' in notice_body
+
+
+def test_frontend_auto_refreshes_job_list_without_refreshing_detail() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+
+    assert "jobsRefreshing: false" in source
+    assert "const JOB_AUTO_REFRESH_MS = 30_000" in source
+
+    load_body = source[
+        source.index("async function loadRuntimeAndJobs")
+        : source.index("function renderJobs")
+    ]
+    assert "async function loadRuntimeAndJobs(options = {})" in load_body
+    assert "const refreshSelectedDetail = options.refreshSelectedDetail ?? true" in load_body
+    assert "const quiet = Boolean(options.quiet)" in load_body
+    assert "if (state.jobsRefreshing)" in load_body
+    assert "state.jobsRefreshing = true" in load_body
+    assert "if (!quiet)" in load_body
+    detail_branch = load_body[
+        load_body.index("if (state.selectedJobId && state.jobs.some")
+        : load_body.index("} else if (state.selectedJobId)")
+    ]
+    refresh_gate = detail_branch[
+        detail_branch.index("if (refreshSelectedDetail)")
+        : detail_branch.index("}", detail_branch.index("if (refreshSelectedDetail)")) + 1
+    ]
+    assert "await loadJobDetail(state.selectedJobId)" in refresh_gate
+    assert load_body.count("await loadJobDetail(state.selectedJobId)") == 1
+    assert (
+        load_body.index("if (refreshSelectedDetail)")
+        < load_body.index("await loadJobDetail(state.selectedJobId)")
+        < load_body.index("} else if (state.selectedJobId)")
+    )
+    assert detail_branch.count("await loadJobDetail(state.selectedJobId)") == 1
+    assert "showNotice(error.message, true)" in load_body
+    assert "state.jobsRefreshing = false" in load_body
+
+    auto_refresh_body = source[
+        source.index("function startJobsAutoRefresh")
+        : source.index("function isTimedTokenCurrent")
+    ]
+    assert "window.setInterval(refreshJobsQuietly, JOB_AUTO_REFRESH_MS)" in auto_refresh_body
+    assert 'document.addEventListener("visibilitychange"' in auto_refresh_body
+    assert "if (!document.hidden)" in auto_refresh_body
+    assert "!state.token || document.hidden || isActionBusy() || state.jobsRefreshing" in auto_refresh_body
+    assert "loadRuntimeAndJobs({ refreshSelectedDetail: false, quiet: true })" in auto_refresh_body
+    assert auto_refresh_body.count("loadRuntimeAndJobs(") == 1
+
+    assert "startJobsAutoRefresh();\nloadRuntimeAndJobs();" in source

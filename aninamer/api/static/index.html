@@ -42,24 +42,22 @@
             </form>
             <button id="validateApply" type="button" disabled>全量验证</button>
             <button id="applyValidated" type="button" disabled>应用验证结果</button>
-            <button id="checkReviewSafety" type="button" disabled>检查安全</button>
-            <button id="checkRollback" type="button" disabled>检查回撤</button>
-            <button id="withdrawChecked" type="button" disabled>执行回撤</button>
-            <button id="reopenFromReview" type="button" disabled>重新打开</button>
             <button id="refreshReview" type="button" disabled>刷新审查</button>
           </div>
         </section>
 
-        <section id="notice" class="notice hidden"></section>
+        <section id="notice" class="notice hidden" role="status" aria-live="polite"></section>
 
         <section class="summary-grid">
           <article>
             <h3>Readiness</h3>
             <dl id="readiness"></dl>
+            <div id="readinessDetails" class="detail-list"></div>
           </article>
           <article>
             <h3>TMDB</h3>
             <dl id="tmdbInfo"></dl>
+            <div id="tmdbCandidates" class="tmdb-candidates"></div>
           </article>
           <article>
             <h3>Safety</h3>
@@ -68,25 +66,55 @@
           <article>
             <h3>Apply</h3>
             <dl id="validationInfo"></dl>
+            <div id="validationDetails" class="detail-list"></div>
           </article>
           <article>
             <h3>Rollback</h3>
             <dl id="rollbackInfo"></dl>
+            <div id="rollbackFlow" class="rollback-flow" aria-label="回撤流程">
+              <div id="rollbackSafetyStep" class="rollback-step">
+                <span class="step-index">1</span>
+                <div>
+                  <strong>安全检查</strong>
+                  <span id="rollbackSafetyStatus">未检查</span>
+                </div>
+              </div>
+              <div id="rollbackEligibilityStep" class="rollback-step">
+                <span class="step-index">2</span>
+                <div>
+                  <strong>回撤资格</strong>
+                  <span id="rollbackEligibilityStatus">未检查</span>
+                </div>
+              </div>
+              <div id="rollbackExecuteStep" class="rollback-step">
+                <span class="step-index">3</span>
+                <div>
+                  <strong>执行</strong>
+                  <span id="rollbackExecuteStatus">等待前置条件</span>
+                </div>
+              </div>
+              <div class="rollback-actions">
+                <button id="checkReviewSafety" type="button" disabled>检查安全</button>
+                <button id="checkRollback" type="button" disabled>检查回撤</button>
+                <button id="withdrawChecked" type="button" disabled>执行回撤</button>
+                <button id="reopenFromReview" type="button" disabled>重新打开</button>
+              </div>
+            </div>
             <div id="rollbackDetails" class="detail-list"></div>
           </article>
         </section>
 
         <section class="tabs">
           <div class="tab-buttons" role="tablist">
-            <button class="tab active" data-tab="mapping" type="button">匹配</button>
-            <button class="tab" data-tab="files" type="button">文件</button>
-            <button class="tab" data-tab="moves" type="button">移动</button>
-            <button class="tab" data-tab="rematch" type="button">重匹配</button>
-            <button class="tab" data-tab="evidence" type="button">证据</button>
-            <button class="tab" data-tab="operations" type="button">操作</button>
+            <button id="tabButtonMapping" class="tab active" data-tab="mapping" type="button" role="tab" aria-selected="true" aria-controls="tab-mapping">匹配</button>
+            <button id="tabButtonFiles" class="tab" data-tab="files" type="button" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">文件</button>
+            <button id="tabButtonMoves" class="tab" data-tab="moves" type="button" role="tab" aria-selected="false" aria-controls="tab-moves" tabindex="-1">移动</button>
+            <button id="tabButtonRematch" class="tab" data-tab="rematch" type="button" role="tab" aria-selected="false" aria-controls="tab-rematch" tabindex="-1">重匹配</button>
+            <button id="tabButtonEvidence" class="tab" data-tab="evidence" type="button" role="tab" aria-selected="false" aria-controls="tab-evidence" tabindex="-1">证据</button>
+            <button id="tabButtonOperations" class="tab" data-tab="operations" type="button" role="tab" aria-selected="false" aria-controls="tab-operations" tabindex="-1">操作</button>
           </div>
 
-          <div id="tab-mapping" class="tab-panel active">
+          <div id="tab-mapping" class="tab-panel active" role="tabpanel" aria-labelledby="tabButtonMapping">
             <form id="correctionForm" class="correction-form">
               <div class="section-heading">
                 <h3>Manual Correction</h3>
@@ -162,7 +190,7 @@
             </div>
           </div>
 
-          <div id="tab-files" class="tab-panel">
+          <div id="tab-files" class="tab-panel" role="tabpanel" aria-labelledby="tabButtonFiles">
             <div class="table-wrap">
               <table>
                 <thead>
@@ -180,7 +208,7 @@
             </div>
           </div>
 
-          <div id="tab-moves" class="tab-panel">
+          <div id="tab-moves" class="tab-panel" role="tabpanel" aria-labelledby="tabButtonMoves">
             <div class="table-wrap">
               <table>
                 <thead>
@@ -199,7 +227,7 @@
             </div>
           </div>
 
-          <div id="tab-rematch" class="tab-panel">
+          <div id="tab-rematch" class="tab-panel" role="tabpanel" aria-labelledby="tabButtonRematch">
             <section>
               <div class="section-heading">
                 <h3>Rematch Preview</h3>
@@ -223,11 +251,11 @@
             </section>
           </div>
 
-          <div id="tab-evidence" class="tab-panel">
+          <div id="tab-evidence" class="tab-panel" role="tabpanel" aria-labelledby="tabButtonEvidence">
             <div id="evidenceList" class="evidence-list"></div>
           </div>
 
-          <div id="tab-operations" class="tab-panel">
+          <div id="tab-operations" class="tab-panel" role="tabpanel" aria-labelledby="tabButtonOperations">
             <div class="table-wrap">
               <table>
                 <thead>
@@ -246,6 +274,20 @@
         </section>
       </main>
     </div>
+    <dialog id="confirmDialog" class="confirm-dialog">
+      <div class="confirm-box">
+        <header>
+          <h3 id="confirmTitle">确认操作</h3>
+          <button id="confirmClose" type="button" aria-label="关闭">×</button>
+        </header>
+        <p id="confirmSummary" class="confirm-summary"></p>
+        <div id="confirmDetails" class="confirm-details"></div>
+        <footer>
+          <button id="confirmCancel" type="button">取消</button>
+          <button id="confirmProceed" type="button" class="danger-button">确认执行</button>
+        </footer>
+      </div>
+    </dialog>
     <script src="/ui/app.js" type="module"></script>
   </body>
 </html>
