@@ -43,7 +43,10 @@
           <article class="summary-card summary-card-wide">
             <h3>就绪状态</h3>
             <dl id="readiness"></dl>
-            <div id="readinessDetails" class="detail-list"></div>
+            <details class="summary-details">
+              <summary>就绪明细</summary>
+              <div id="readinessDetails" class="detail-list"></div>
+            </details>
           </article>
           <article class="summary-card">
             <h3>TMDB</h3>
@@ -55,17 +58,100 @@
           </article>
         </section>
 
-        <section class="review-layout">
-          <section class="review-main">
-            <div class="tabs">
-              <div class="tab-buttons" role="tablist">
-                <button id="tabButtonMapping" class="tab active" data-tab="mapping" type="button" role="tab" aria-selected="true" aria-controls="tab-mapping">匹配</button>
-                <button id="tabButtonFiles" class="tab" data-tab="files" type="button" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">文件</button>
-                <button id="tabButtonMoves" class="tab" data-tab="moves" type="button" role="tab" aria-selected="false" aria-controls="tab-moves" tabindex="-1">移动</button>
-                <button id="tabButtonRematch" class="tab" data-tab="rematch" type="button" role="tab" aria-selected="false" aria-controls="tab-rematch" tabindex="-1">重匹配</button>
-                <button id="tabButtonEvidence" class="tab" data-tab="evidence" type="button" role="tab" aria-selected="false" aria-controls="tab-evidence" tabindex="-1">证据</button>
-                <button id="tabButtonOperations" class="tab" data-tab="operations" type="button" role="tab" aria-selected="false" aria-controls="tab-operations" tabindex="-1">操作</button>
+        <section class="workflow-panel" aria-label="review 操作">
+          <article class="workflow-card">
+            <div class="section-heading">
+              <div>
+                <h3>重匹配</h3>
+                <p class="workflow-hint">指定 TMDB ID 后生成预览，再提交为新计划。</p>
               </div>
+              <button id="commitRematch" class="primary-button" type="button" disabled>提交预览</button>
+            </div>
+            <form id="rematchForm" class="rematch-form">
+              <label>
+                TMDB ID
+                <input id="tmdbInput" name="tmdbInput" type="number" min="1" inputmode="numeric" />
+              </label>
+              <button id="previewRematch" type="submit" disabled>预览重匹配</button>
+            </form>
+            <details class="workflow-details">
+              <summary>TMDB 候选</summary>
+              <div id="tmdbCandidates" class="tmdb-candidates"></div>
+            </details>
+          </article>
+
+          <article class="workflow-card">
+            <div class="section-heading">
+              <div>
+                <h3>应用</h3>
+                <p class="workflow-hint">全量验证通过后执行当前计划。</p>
+              </div>
+              <div class="button-pair">
+                <button id="validateApply" type="button" disabled>全量验证</button>
+                <button id="applyValidated" class="primary-button" type="button" disabled>应用验证结果</button>
+              </div>
+            </div>
+            <dl id="validationInfo"></dl>
+            <details class="workflow-details">
+              <summary>验证明细</summary>
+              <div id="validationDetails" class="detail-list"></div>
+            </details>
+          </article>
+
+          <article class="workflow-card">
+            <div class="section-heading">
+              <div>
+                <h3>回撤</h3>
+                <p class="workflow-hint">检查安全和资格后回撤到 review 目录。</p>
+              </div>
+            </div>
+            <dl id="rollbackInfo"></dl>
+            <div id="rollbackFlow" class="rollback-flow" aria-label="回撤流程">
+              <div id="rollbackSafetyStep" class="rollback-step">
+                <span class="step-index">1</span>
+                <div>
+                  <strong>安全检查</strong>
+                  <span id="rollbackSafetyStatus">未检查</span>
+                </div>
+              </div>
+              <div id="rollbackEligibilityStep" class="rollback-step">
+                <span class="step-index">2</span>
+                <div>
+                  <strong>回撤资格</strong>
+                  <span id="rollbackEligibilityStatus">未检查</span>
+                </div>
+              </div>
+              <div id="rollbackExecuteStep" class="rollback-step">
+                <span class="step-index">3</span>
+                <div>
+                  <strong>执行</strong>
+                  <span id="rollbackExecuteStatus">等待前置条件</span>
+                </div>
+              </div>
+              <div class="rollback-actions">
+                <button id="checkReviewSafety" type="button" disabled>检查安全</button>
+                <button id="checkRollback" type="button" disabled>检查回撤</button>
+                <button id="withdrawChecked" class="danger-outline-button" type="button" disabled>回撤全部</button>
+                <button id="reopenFromReview" type="button" disabled>重新打开</button>
+              </div>
+            </div>
+            <details class="workflow-details">
+              <summary>回撤明细</summary>
+              <div id="rollbackDetails" class="detail-list"></div>
+            </details>
+          </article>
+        </section>
+
+        <section class="review-main">
+          <div class="tabs">
+            <div class="tab-buttons" role="tablist">
+              <button id="tabButtonMapping" class="tab active" data-tab="mapping" type="button" role="tab" aria-selected="true" aria-controls="tab-mapping">匹配</button>
+              <button id="tabButtonFiles" class="tab" data-tab="files" type="button" role="tab" aria-selected="false" aria-controls="tab-files" tabindex="-1">文件</button>
+              <button id="tabButtonMoves" class="tab" data-tab="moves" type="button" role="tab" aria-selected="false" aria-controls="tab-moves" tabindex="-1">移动</button>
+              <button id="tabButtonRematch" class="tab" data-tab="rematch" type="button" role="tab" aria-selected="false" aria-controls="tab-rematch" tabindex="-1">重匹配</button>
+              <button id="tabButtonEvidence" class="tab" data-tab="evidence" type="button" role="tab" aria-selected="false" aria-controls="tab-evidence" tabindex="-1">证据</button>
+              <button id="tabButtonOperations" class="tab" data-tab="operations" type="button" role="tab" aria-selected="false" aria-controls="tab-operations" tabindex="-1">操作</button>
+            </div>
 
               <div id="tab-mapping" class="tab-panel active" role="tabpanel" aria-labelledby="tabButtonMapping">
                 <form id="correctionForm" class="correction-form">
@@ -223,72 +309,7 @@
                   </table>
                 </div>
               </div>
-            </div>
-          </section>
-
-          <aside class="operation-rail" aria-label="review 操作">
-            <section class="operation-card">
-              <div class="section-heading">
-                <h3>重匹配</h3>
-                <button id="commitRematch" class="primary-button" type="button" disabled>提交预览</button>
-              </div>
-              <form id="rematchForm" class="rematch-form">
-                <label>
-                  TMDB ID
-                  <input id="tmdbInput" name="tmdbInput" type="number" min="1" inputmode="numeric" />
-                </label>
-                <button id="previewRematch" type="submit" disabled>预览重匹配</button>
-              </form>
-              <div id="tmdbCandidates" class="tmdb-candidates"></div>
-            </section>
-
-            <section class="operation-card">
-              <div class="section-heading">
-                <h3>应用</h3>
-                <div class="button-pair">
-                  <button id="validateApply" type="button" disabled>全量验证</button>
-                  <button id="applyValidated" class="primary-button" type="button" disabled>应用验证结果</button>
-                </div>
-              </div>
-              <dl id="validationInfo"></dl>
-              <div id="validationDetails" class="detail-list"></div>
-            </section>
-
-            <section class="operation-card">
-              <h3>回撤</h3>
-              <dl id="rollbackInfo"></dl>
-              <div id="rollbackFlow" class="rollback-flow" aria-label="回撤流程">
-                <div id="rollbackSafetyStep" class="rollback-step">
-                  <span class="step-index">1</span>
-                  <div>
-                    <strong>安全检查</strong>
-                    <span id="rollbackSafetyStatus">未检查</span>
-                  </div>
-                </div>
-                <div id="rollbackEligibilityStep" class="rollback-step">
-                  <span class="step-index">2</span>
-                  <div>
-                    <strong>回撤资格</strong>
-                    <span id="rollbackEligibilityStatus">未检查</span>
-                  </div>
-                </div>
-                <div id="rollbackExecuteStep" class="rollback-step">
-                  <span class="step-index">3</span>
-                  <div>
-                    <strong>执行</strong>
-                    <span id="rollbackExecuteStatus">等待前置条件</span>
-                  </div>
-                </div>
-                <div class="rollback-actions">
-                  <button id="checkReviewSafety" type="button" disabled>检查安全</button>
-                  <button id="checkRollback" type="button" disabled>检查回撤</button>
-                  <button id="withdrawChecked" class="danger-outline-button" type="button" disabled>回撤全部</button>
-                  <button id="reopenFromReview" type="button" disabled>重新打开</button>
-                </div>
-              </div>
-              <div id="rollbackDetails" class="detail-list"></div>
-            </section>
-          </aside>
+          </div>
         </section>
       </main>
     </div>

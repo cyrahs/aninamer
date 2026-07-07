@@ -41,6 +41,7 @@ button {
   min-height: 34px;
   padding: 0 12px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 button:hover:not(:disabled) {
@@ -270,7 +271,7 @@ dt,
 .summary-card,
 .tab-panel section,
 .tabs,
-.operation-card {
+.workflow-card {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -281,7 +282,20 @@ dt,
   min-width: 0;
 }
 
-.summary-card .detail-list {
+.summary-details {
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.summary-details summary {
+  cursor: pointer;
+  color: #435061;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.summary-details .detail-list {
   max-height: 156px;
   overflow: auto;
 }
@@ -387,7 +401,7 @@ dd {
 .tmdb-candidates {
   display: grid;
   gap: 6px;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 .tmdb-candidate {
@@ -529,26 +543,26 @@ td .path {
 
 .rollback-flow {
   display: grid;
-  gap: 8px;
-  margin-top: 12px;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .rollback-step {
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr);
   gap: 8px;
   align-items: start;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: #fbfcfd;
-  padding: 8px;
+  padding: 7px 8px;
 }
 
 .rollback-step .step-index {
   display: inline-grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 999px;
   background: #edf1f5;
   color: #405061;
@@ -613,10 +627,10 @@ td .path {
   grid-template-columns: minmax(72px, auto) minmax(0, 1fr);
 }
 
-.review-layout {
+.workflow-panel {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
-  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
   align-items: start;
 }
 
@@ -624,42 +638,88 @@ td .path {
   min-width: 0;
 }
 
-.operation-rail {
-  display: grid;
-  gap: 12px;
-  position: sticky;
-  top: 18px;
-  max-height: calc(100vh - 36px);
-  overflow: auto;
-  min-width: 0;
-}
-
-.operation-card {
+.workflow-card {
   padding: 12px;
   min-width: 0;
 }
 
-.operation-card .detail-list {
-  max-height: 280px;
-  overflow: auto;
+.workflow-card .section-heading {
+  align-items: start;
+  margin-bottom: 8px;
 }
 
-.operation-card .section-heading {
-  align-items: start;
+.workflow-card .section-heading > div {
+  min-width: 0;
+}
+
+.workflow-card dl {
+  grid-template-columns: minmax(68px, auto) minmax(0, 1fr);
+  font-size: 13px;
+}
+
+.workflow-hint {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  margin: 4px 0 0;
+}
+
+.workflow-details {
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.workflow-details summary {
+  cursor: pointer;
+  color: #435061;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.workflow-details .detail-list,
+.workflow-details .tmdb-candidates {
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.rollback-actions {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.rollback-actions button,
+.button-pair button {
+  min-width: 0;
 }
 
 .button-pair {
   justify-content: flex-end;
 }
 
-.rollback-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.workflow-card .rollback-flow {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.rollback-actions button,
-.button-pair button {
-  min-width: 0;
+.workflow-card .rollback-step {
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 6px;
+  padding: 6px;
+}
+
+.workflow-card .rollback-step strong {
+  font-size: 12px;
+}
+
+.workflow-card .rollback-step span:last-child {
+  font-size: 12px;
+}
+
+.workflow-card .rollback-actions button {
+  font-size: 12px;
+  padding: 0 6px;
 }
 
 .rematch-table {
@@ -741,19 +801,6 @@ td .path {
 }
 
 @media (max-width: 1280px) {
-  .review-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .operation-rail {
-    order: -1;
-    position: static;
-    max-height: none;
-    overflow: visible;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
-    align-items: start;
-  }
-
   .summary-grid {
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
   }

@@ -4678,17 +4678,24 @@ def test_frontend_confirmation_dialog_markup_matches_script() -> None:
         assert f'querySelector("#{element_id}")' in source
 
 
-def test_frontend_renders_rollback_gate_flow_in_operation_rail() -> None:
+def test_frontend_renders_rollback_gate_flow_in_workflow_panel() -> None:
     html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
     source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
-    rail_start = html.index('<aside class="operation-rail"')
-    rollback_start = html.index("<h3>回撤</h3>", rail_start)
+    workflow_start = html.index('<section class="workflow-panel"')
+    rollback_start = html.index("<h3>回撤</h3>", workflow_start)
     flow_start = html.index('id="rollbackFlow"', rollback_start)
     details_start = html.index('id="rollbackDetails"', flow_start)
+    rollback_card_end = html.index("</article>", rollback_start)
     rollback_markup = html[rollback_start:details_start]
+    review_main_start = html.index('<section class="review-main">')
     topbar_start = html.index('<section class="topbar">')
     topbar_end = html.index("</section>", topbar_start)
     topbar_markup = html[topbar_start:topbar_end]
+
+    assert "operation-rail" not in html
+    assert "review-layout" not in html
+    assert workflow_start < review_main_start
+    assert details_start < rollback_card_end
 
     for element_id in [
         "rollbackFlow",
