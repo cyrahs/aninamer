@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import threading
 import time
-from typing import Callable, Literal
+from typing import Any, Callable, Literal
 
 from aninamer.artifacts import (
     rename_result_to_payload,
@@ -491,6 +491,8 @@ class AninamerWorker:
         for job in self._store.list_jobs():
             if job.status == "pending":
                 self._maybe_plan_job(job)
+            elif job.status == "planned" and self._config.worker.auto_apply:
+                self._auto_apply_planned_job(job)
             elif job.status == "apply_requested":
                 self._apply_job(job)
 
@@ -595,10 +597,7 @@ class AninamerWorker:
                 subtitle_moves_count=subtitle_count,
             )
             if self._config.worker.auto_apply:
-                logger.warning(
-                    "worker: auto_apply_disabled_pending_operation_safety job_id=%s",
-                    updated_job.id,
-                )
+                self._auto_apply_planned_job(updated_job)
         except Exception as exc:
             if _is_transient_exception(exc):
                 self._retry_job_after_transient_error(
@@ -610,6 +609,171 @@ class AninamerWorker:
                 )
                 return
             self._fail_job(job, stage="plan", exc=exc)
+
+    def _auto_apply_planned_job(self, job: JobRecord) -> None:
+        if job.status != "planned":
+            return
+
+        try:
+            from aninamer.api.schemas import (
+                ApplyRequest,
+                ApplyValidationRequest,
+                ApplyValidationResponse,
+            )
+            from aninamer.api.service import ApiService, ApiServiceError
+        except Exception:
+            logger.exception("worker: auto_apply_import_failed job_id=%s", job.id)
+            return
+
+        service = ApiService(store=self._store, worker=self)
+        try:
+            review = service.review(job.id)
+            if review is None:
+                logger.warning("worker: auto_apply_job_missing job_id=%s", job.id)
+                return
+            base_versions = _apply_base_versions_from_review(review)
+            validation = self._latest_current_auto_apply_validation(
+                job_id=job.id,
+                versions=base_versions,
+                response_model=ApplyValidationResponse,
+            )
+            if validation is None:
+                validation = service.validate_apply(
+                    job.id,
+                    ApplyValidationRequest(
+                        scope="all_for_apply",
+                        **base_versions,
+                    ),
+                    idempotency_key=_auto_apply_idempotency_key(
+                        "validate",
+                        job.id,
+                        versions=base_versions,
+                    ),
+                )
+            if validation is None:
+                logger.warning("worker: auto_apply_validation_missing job_id=%s", job.id)
+                return
+            if validation.status != "valid":
+                logger.warning(
+                    "worker: auto_apply_validation_blocked job_id=%s validation_id=%s blocking_count=%s warning_count=%s",
+                    job.id,
+                    validation.validation_id,
+                    len(validation.blocking_items),
+                    len(validation.warning_items),
+                )
+                return
+
+            apply_review = service.review(job.id)
+            if apply_review is None:
+                logger.warning("worker: auto_apply_job_missing job_id=%s", job.id)
+                return
+            apply_versions = _apply_base_versions_from_review(apply_review)
+            response = service.apply_job(
+                job.id,
+                ApplyRequest(
+                    scope="all_validated",
+                    validation_id=validation.validation_id,
+                    **apply_versions,
+                ),
+                idempotency_key=_auto_apply_idempotency_key(
+                    "apply",
+                    job.id,
+                    versions=apply_versions,
+                    validation_id=validation.validation_id,
+                ),
+            )
+            if response is None:
+                logger.warning("worker: auto_apply_response_missing job_id=%s", job.id)
+                return
+            if response.status == "succeeded":
+                logger.info(
+                    "worker: auto_apply_succeeded job_id=%s validation_id=%s operation_id=%s applied_move_items=%s",
+                    job.id,
+                    validation.validation_id,
+                    response.operation_id,
+                    response.applied_move_item_count,
+                )
+                return
+            logger.warning(
+                "worker: auto_apply_operation_failed job_id=%s validation_id=%s operation_id=%s error=%s",
+                job.id,
+                validation.validation_id,
+                response.operation_id,
+                response.error,
+            )
+        except ApiServiceError as exc:
+            logger.warning(
+                "worker: auto_apply_api_error job_id=%s code=%s message=%s details=%s",
+                job.id,
+                exc.code,
+                exc.message,
+                exc.details,
+            )
+            self._notify_auto_apply_failed_if_job_failed(job.id)
+        except Exception:
+            logger.exception("worker: auto_apply_failed job_id=%s", job.id)
+            self._notify_auto_apply_failed_if_job_failed(job.id)
+
+    def _latest_current_auto_apply_validation(
+        self,
+        *,
+        job_id: int,
+        versions: dict[str, int],
+        response_model: type[Any],
+    ) -> Any | None:
+        prefix = f"auto-validate-{job_id}-"
+        for operation in self._store.list_operations(job_id):
+            if operation.operation_type != "validate":
+                continue
+            if operation.status != "succeeded":
+                continue
+            if operation.idempotency_key is None:
+                continue
+            if not operation.idempotency_key.startswith(prefix):
+                continue
+            payload = operation.result_summary.get("response_payload")
+            if not isinstance(payload, dict):
+                continue
+            if (
+                payload.get("validated_mapping_version")
+                != versions["base_mapping_version"]
+                or payload.get("validated_move_plan_version")
+                != versions["base_move_plan_version"]
+                or payload.get("checked_move_state_revision")
+                != versions["base_move_state_revision"]
+            ):
+                continue
+            try:
+                return response_model.model_validate(payload)
+            except Exception as exc:
+                logger.warning(
+                    "worker: auto_apply_validation_payload_invalid job_id=%s operation_id=%s error=%s",
+                    job_id,
+                    operation.id,
+                    exc,
+                )
+        return None
+
+    def _notify_auto_apply_failed_if_job_failed(self, job_id: int) -> None:
+        try:
+            job = self._store.get_job(job_id)
+        except Exception as exc:
+            logger.warning(
+                "worker: auto_apply_failed_job_lookup_failed job_id=%s error=%s",
+                job_id,
+                exc,
+            )
+            return
+        if job is None or job.status != "failed" or job.error_stage != "apply":
+            return
+        try:
+            self._notify_job_apply_failed(job)
+        except Exception as exc:
+            logger.warning(
+                "worker: auto_apply_failed_notification_failed job_id=%s error=%s",
+                job_id,
+                exc,
+            )
 
     def _apply_job(self, job: JobRecord) -> None:
         series_dir = Path(job.series_dir)
@@ -1042,6 +1206,38 @@ def _count_moves(plan: RenamePlan) -> tuple[int, int]:
     video_count = sum(1 for move in plan.moves if move.kind == "video")
     subtitle_count = sum(1 for move in plan.moves if move.kind == "subtitle")
     return video_count, subtitle_count
+
+
+def _apply_base_versions_from_review(review: Any) -> dict[str, int]:
+    return {
+        "base_mapping_version": review.versions.mapping_version,
+        "base_move_plan_version": review.versions.move_plan_version,
+        "base_move_state_revision": review.versions.move_state_revision,
+        "base_review_revision": review.versions.review_revision,
+    }
+
+
+def _auto_apply_idempotency_key(
+    operation_type: Literal["validate", "apply"],
+    job_id: int,
+    *,
+    versions: dict[str, int],
+    validation_id: int | None = None,
+) -> str:
+    raw = "|".join(
+        str(item)
+        for item in (
+            operation_type,
+            job_id,
+            validation_id or "",
+            versions["base_mapping_version"],
+            versions["base_move_plan_version"],
+            versions["base_move_state_revision"],
+            versions["base_review_revision"],
+        )
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return f"auto-{operation_type}-{job_id}-{digest}"
 
 
 def _review_snapshot_from_plan_result(

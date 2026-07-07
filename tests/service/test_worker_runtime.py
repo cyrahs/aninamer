@@ -329,6 +329,108 @@ def test_worker_scan_creates_planned_job_and_persists_move_items(
     assert runtime_store.list_notifications_after(0) == []
 
 
+def test_worker_auto_applies_existing_planned_job_through_api_operations(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
+    series_dir = app_config.watch_roots[0].input_root / "ShowA {tmdb-123}"
+    source_video = series_dir / "ep1.mkv"
+    source_subtitle = series_dir / "ep1.ass"
+    _write(source_video, b"video")
+    _write(source_subtitle, "国国国".encode("utf-8"))
+
+    planner = AninamerWorker(
+        app_config,
+        runtime_store,
+        tmdb_client_factory=lambda: FakeTMDBClient(),
+        llm_for_mapping_factory=lambda: FakeLLM(
+            '{"tmdb":123,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[2]}]}'
+        ),
+    )
+    planner.scan_once()
+    job = runtime_store.list_jobs()[0]
+    assert job.status == "planned"
+    planned_moves = runtime_store.list_job_moves(job.id)
+    destinations = {move.kind: Path(move.dst) for move in planned_moves}
+
+    auto_config = replace(
+        app_config,
+        worker=replace(app_config.worker, auto_apply=True),
+    )
+    worker = AninamerWorker(auto_config, runtime_store)
+
+    worker.scan_once()
+
+    updated = runtime_store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == "succeeded"
+    assert not source_video.exists()
+    assert not source_subtitle.exists()
+    assert destinations["video"].read_bytes() == b"video"
+    assert destinations["subtitle"].read_bytes() == "国国国".encode("utf-8")
+    moved = runtime_store.list_job_moves(job.id)
+    assert [item.status for item in moved] == ["moved", "moved"]
+    assert all(item.applied_at is not None for item in moved)
+    operations = list(reversed(runtime_store.list_operations(job.id)))
+    assert [(item.operation_type, item.status) for item in operations] == [
+        ("validate", "succeeded"),
+        ("apply", "succeeded"),
+    ]
+    assert operations[0].idempotency_key is not None
+    assert operations[0].idempotency_key.startswith(f"auto-validate-{job.id}-")
+    assert operations[1].idempotency_key is not None
+    assert operations[1].idempotency_key.startswith(f"auto-apply-{job.id}-")
+    assert operations[0].result_summary["response_payload"]["status"] == "valid"
+    assert operations[1].result_summary["response_payload"]["status"] == "succeeded"
+    item_results = runtime_store.list_operation_item_results(operations[1].id)
+    assert [item.status for item in item_results] == ["succeeded", "succeeded"]
+
+
+def test_worker_auto_apply_invalid_validation_is_not_repeated(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
+    series_dir = app_config.watch_roots[0].input_root / "ShowA {tmdb-123}"
+    _write(series_dir / "ep1.mkv", b"video")
+
+    planner = AninamerWorker(
+        app_config,
+        runtime_store,
+        tmdb_client_factory=lambda: FakeTMDBClient(),
+        llm_for_mapping_factory=lambda: FakeLLM(
+            '{"tmdb":123,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[]}]}'
+        ),
+    )
+    planner.scan_once()
+    job = runtime_store.list_jobs()[0]
+    destination = Path(runtime_store.list_job_moves(job.id)[0].dst)
+    _write(destination, b"existing")
+
+    auto_config = replace(
+        app_config,
+        worker=replace(app_config.worker, auto_apply=True),
+    )
+    worker = AninamerWorker(auto_config, runtime_store)
+
+    worker.scan_once()
+    worker.scan_once()
+
+    updated = runtime_store.get_job(job.id)
+    assert updated is not None
+    assert updated.status == "planned"
+    assert (series_dir / "ep1.mkv").read_bytes() == b"video"
+    assert destination.read_bytes() == b"existing"
+    moves = runtime_store.list_job_moves(job.id)
+    assert [item.status for item in moves] == ["proposed"]
+    operations = runtime_store.list_operations(job.id)
+    assert [(item.operation_type, item.status) for item in operations] == [
+        ("validate", "succeeded")
+    ]
+    payload = operations[0].result_summary["response_payload"]
+    assert payload["status"] == "invalid"
+    assert payload["blocking_items"][0]["code"] == "destination_exists"
+
+
 def test_worker_empty_plan_fails_without_archive_when_auto_apply_enabled(
     app_config,
     runtime_store: RuntimeStore,
