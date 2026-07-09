@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ApiSchema(BaseModel):
@@ -364,6 +364,17 @@ class ReopenFromReviewResponse(ApiSchema):
 class RematchPreviewRequest(ApiSchema):
     tmdb_id: int = Field(gt=0)
     base_review_revision: int = Field(ge=1)
+    additional_instructions: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("additional_instructions", mode="before")
+    @classmethod
+    def normalize_additional_instructions(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        return normalized or None
 
 
 class RematchPreviewResponse(ApiSchema):
@@ -371,6 +382,9 @@ class RematchPreviewResponse(ApiSchema):
     status: Literal["preview_ready", "failed"]
     tmdb_id: int
     base_review_revision: int
+    additional_instructions_present: bool = False
+    additional_instructions_digest: str | None = None
+    additional_instructions_length: int = Field(default=0, ge=0)
     selected_tmdb_info: TmdbReviewInfo
     episode_targets: list[ReviewEpisodeTarget]
     subtitle_links: list[ReviewSubtitleLink]
@@ -393,6 +407,9 @@ class RematchCommitResponse(ApiSchema):
     preview_operation_id: int
     tmdb_id: int
     base_review_revision: int
+    additional_instructions_present: bool = False
+    additional_instructions_digest: str | None = None
+    additional_instructions_length: int = Field(default=0, ge=0)
     selected_tmdb_info: TmdbReviewInfo
     diff_summary: dict[str, Any]
     committed_move_item_count: int = Field(ge=0)

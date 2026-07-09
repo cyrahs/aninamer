@@ -61,6 +61,7 @@ class FakeRematchTMDBClient:
 class FakeLLM:
     def __init__(self, reply: str) -> None:
         self.reply = reply
+        self.messages: list[ChatMessage] = []
 
     def chat(
         self,
@@ -69,6 +70,7 @@ class FakeLLM:
         temperature: float = 0.0,
         max_output_tokens: int = 256,
     ) -> str:
+        self.messages = list(messages)
         return self.reply
 
 
@@ -739,13 +741,14 @@ def test_rematch_preview_with_explicit_tmdb_id_is_idempotent_and_does_not_replac
     output_root = tmp_path / "output"
     _write(series_dir / "ep1.mkv", b"video")
     _write(series_dir / "ep1.ass", "国国国".encode("utf-8"))
+    mapping_llm = FakeLLM(
+        '{"tmdb":456,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[2]}]}'
+    )
     worker = AninamerWorker(
         app_config,
         runtime_store,
         tmdb_client_factory=lambda: FakeRematchTMDBClient(),
-        llm_for_mapping_factory=lambda: FakeLLM(
-            '{"tmdb":456,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[2]}]}'
-        ),
+        llm_for_mapping_factory=lambda: mapping_llm,
     )
     job = runtime_store.create_job(
         series_name="旧动画",
@@ -866,6 +869,7 @@ def test_rematch_preview_with_explicit_tmdb_id_is_idempotent_and_does_not_replac
         request_payload = {
             "tmdb_id": 456,
             "base_review_revision": versions["review_revision"],
+            "additional_instructions": "  集数整体偏移 +1\n只匹配正片  ",
         }
 
         missing_key = client.post(
@@ -906,6 +910,10 @@ def test_rematch_preview_with_explicit_tmdb_id_is_idempotent_and_does_not_replac
     assert payload["status"] == "preview_ready"
     assert payload["tmdb_id"] == 456
     assert payload["base_review_revision"] == versions["review_revision"]
+    assert payload["additional_instructions_present"] is True
+    assert payload["additional_instructions_length"] == len("集数整体偏移 +1\n只匹配正片")
+    assert isinstance(payload["additional_instructions_digest"], str)
+    assert "集数整体偏移" not in first.text
     assert payload["selected_tmdb_info"]["selected_tmdb_id"] == 456
     assert payload["selected_tmdb_info"]["title_zh_cn"] == "新动画"
     assert payload["episode_targets"][0]["video_source_id"] == 1
@@ -922,6 +930,8 @@ def test_rematch_preview_with_explicit_tmdb_id_is_idempotent_and_does_not_replac
     assert "旧动画 (2020) {tmdb-123}" in first.text
     assert payload["validation_summary"]["status"] == "preview_only"
     assert payload["mapping_evidence"]
+    assert "user rematch instructions:" in mapping_llm.messages[1].content
+    assert "集数整体偏移 +1 只匹配正片" in mapping_llm.messages[1].content
     assert conflict.status_code == 409
     assert stale.status_code == 412
     assert stale.json()["error"]["code"] == "stale_versions"
@@ -943,6 +953,10 @@ def test_rematch_preview_with_explicit_tmdb_id_is_idempotent_and_does_not_replac
     assert operation["status"] == "succeeded"
     assert operation["result_summary"]["tmdb_id"] == 456
     assert operation["result_summary"]["status"] == "preview_ready"
+    assert operation["result_summary"]["additional_instructions_present"] is True
+    assert operation["result_summary"]["additional_instructions_digest"] == payload[
+        "additional_instructions_digest"
+    ]
     assert operation["result_summary"]["response_payload"] == payload
 
 
@@ -1074,6 +1088,7 @@ def test_rematch_commit_replaces_plan_rows_and_snapshot_without_moving_files(
             json={
                 "tmdb_id": 456,
                 "base_review_revision": initial_review.json()["review_revision"],
+                "additional_instructions": "优先按文件名标题匹配",
             },
         )
         review_after_preview = client.get(
@@ -1128,6 +1143,11 @@ def test_rematch_commit_replaces_plan_rows_and_snapshot_without_moving_files(
     assert first.json()["preview_operation_id"] == preview.json()["operation_id"]
     assert first.json()["tmdb_id"] == 456
     assert first.json()["committed_move_item_count"] == 2
+    assert first.json()["additional_instructions_present"] is True
+    assert first.json()["additional_instructions_digest"] == preview.json()[
+        "additional_instructions_digest"
+    ]
+    assert first.json()["additional_instructions_length"] == len("优先按文件名标题匹配")
     assert conflict.status_code == 409
     assert stale.status_code == 412
     assert stale.json()["error"]["code"] == "stale_versions"
@@ -1168,6 +1188,10 @@ def test_rematch_commit_replaces_plan_rows_and_snapshot_without_moving_files(
     assert snapshot.mapping_attempts[-1]["stage"] == "rematch"
     assert snapshot.mapping_attempts[-1]["mapped_video_count"] == 1
     assert snapshot.mapping_attempts[-1]["mapped_subtitle_count"] == 1
+    assert snapshot.mapping_attempts[-1]["additional_instructions_present"] is True
+    assert snapshot.mapping_attempts[-1]["additional_instructions_digest"] == preview.json()[
+        "additional_instructions_digest"
+    ]
     assert snapshot.mapping_evidence[-1]["evidence_kind"].startswith("committed_")
     assert snapshot.validation_summary["status"] == "planned"
     assert snapshot.validation_summary["rematched_from_operation_id"] == preview.json()[

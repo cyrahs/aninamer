@@ -96,9 +96,19 @@ const UI_LABELS = {
   orphanSubs: "未关联字幕",
   tmdb: "TMDB",
   title: "标题",
+  originalName: "原名",
+  year: "年份",
   candidates: "候选",
   seasons: "季",
   specials: "特别篇",
+  episodeCounts: "集数",
+  specialEpisodes: "特别篇",
+  link: "链接",
+  operation: "操作",
+  baseRev: "审查版本",
+  instructions: "附加提示",
+  used: "已使用",
+  unused: "未使用",
   watcher: "监控",
   proof: "证明",
   token: "Token",
@@ -129,6 +139,7 @@ const els = {
   apiToken: document.querySelector("#apiToken"),
   rematchForm: document.querySelector("#rematchForm"),
   tmdbInput: document.querySelector("#tmdbInput"),
+  rematchInstructions: document.querySelector("#rematchInstructions"),
   previewRematch: document.querySelector("#previewRematch"),
   commitRematch: document.querySelector("#commitRematch"),
   correctionForm: document.querySelector("#correctionForm"),
@@ -152,11 +163,18 @@ const els = {
   jobMeta: document.querySelector("#jobMeta"),
   notice: document.querySelector("#notice"),
   readiness: document.querySelector("#readiness"),
+  readinessDetailsDisclosure: document.querySelector("#readinessDetailsDisclosure"),
+  readinessDetailsSummary: document.querySelector("#readinessDetailsSummary"),
   readinessDetails: document.querySelector("#readinessDetails"),
   tmdbInfo: document.querySelector("#tmdbInfo"),
+  tmdbDetails: document.querySelector("#tmdbDetails"),
+  tmdbCandidatesDisclosure: document.querySelector("#tmdbCandidatesDisclosure"),
+  tmdbCandidatesSummary: document.querySelector("#tmdbCandidatesSummary"),
   tmdbCandidates: document.querySelector("#tmdbCandidates"),
   safetyInfo: document.querySelector("#safetyInfo"),
   validationInfo: document.querySelector("#validationInfo"),
+  validationDetailsDisclosure: document.querySelector("#validationDetailsDisclosure"),
+  validationDetailsSummary: document.querySelector("#validationDetailsSummary"),
   validationDetails: document.querySelector("#validationDetails"),
   rollbackInfo: document.querySelector("#rollbackInfo"),
   rollbackSafetyStep: document.querySelector("#rollbackSafetyStep"),
@@ -171,8 +189,11 @@ const els = {
   evidenceList: document.querySelector("#evidenceList"),
   operationRows: document.querySelector("#operationRows"),
   moveRows: document.querySelector("#moveRows"),
+  rollbackDetailsDisclosure: document.querySelector("#rollbackDetailsDisclosure"),
+  rollbackDetailsSummary: document.querySelector("#rollbackDetailsSummary"),
   rollbackDetails: document.querySelector("#rollbackDetails"),
   rematchInfo: document.querySelector("#rematchInfo"),
+  rematchTmdbDetails: document.querySelector("#rematchTmdbDetails"),
   rematchRows: document.querySelector("#rematchRows"),
   confirmDialog: document.querySelector("#confirmDialog"),
   confirmTitle: document.querySelector("#confirmTitle"),
@@ -218,6 +239,13 @@ els.tmdbInput.addEventListener("input", () => {
   if (state.review) {
     state.tmdbInputEditedJobId = state.review.job.id;
   }
+  state.rematchPreview = null;
+  state.rematchPreviewGeneration += 1;
+  if (state.review) {
+    renderReview();
+  }
+});
+els.rematchInstructions.addEventListener("input", () => {
   state.rematchPreview = null;
   state.rematchPreviewGeneration += 1;
   if (state.review) {
@@ -489,14 +517,22 @@ function renderReview() {
     orphanSubs: review.readiness_summary.unassociated_subtitle_count,
   });
   renderReadinessDetails(review.readiness_summary);
-  renderDefinitionList(els.tmdbInfo, {
-    tmdb: review.selected_tmdb_info.selected_tmdb_id || "-",
-    title: review.selected_tmdb_info.title_zh_cn || "-",
-    candidates: review.selected_tmdb_info.candidates.length,
-    seasons: review.selected_tmdb_info.seasons.length,
-    specials: review.selected_tmdb_info.specials.length,
-  });
+  updateDisclosureSummary(
+    els.readinessDetailsDisclosure,
+    els.readinessDetailsSummary,
+    "就绪明细",
+    readinessDisclosureText(review.readiness_summary),
+    hasReadinessIssues(review.readiness_summary),
+  );
+  renderTmdbInfo(review.selected_tmdb_info);
   renderTmdbCandidates(review.selected_tmdb_info);
+  updateDisclosureSummary(
+    els.tmdbCandidatesDisclosure,
+    els.tmdbCandidatesSummary,
+    "TMDB 候选",
+    `${review.selected_tmdb_info.candidates.length} 个`,
+    review.selected_tmdb_info.candidates.length > 0,
+  );
   renderDefinitionList(els.safetyInfo, {
     watcher: safety?.watcher_status?.status || "-",
     proof: safety?.review_exclusion_proof?.status || review.review_exclusion_proof.status,
@@ -516,6 +552,13 @@ function renderReview() {
     warnings: validationForJob?.warning_items?.length || 0,
   });
   renderValidationDetails(validationForJob);
+  updateDisclosureSummary(
+    els.validationDetailsDisclosure,
+    els.validationDetailsSummary,
+    "验证明细",
+    validationDisclosureText(validationForJob),
+    hasValidationIssues(validationForJob),
+  );
   const applyReason =
     actionBusy
       ? "等待当前操作完成后再应用"
@@ -834,6 +877,216 @@ function setButtonState(button, disabled, reason = "") {
   button.title = disabled && reason ? reason : "";
 }
 
+function updateDisclosureSummary(details, summary, label, status, open) {
+  if (!details || !summary) {
+    return;
+  }
+  const labelNode = document.createElement("span");
+  labelNode.className = "disclosure-label";
+  labelNode.textContent = label;
+  const statusNode = document.createElement("span");
+  statusNode.className = "disclosure-status";
+  statusNode.textContent = status;
+  summary.replaceChildren(labelNode, statusNode);
+  details.open = Boolean(open);
+}
+
+function readinessDisclosureText(summary) {
+  const blocking = summary?.blocking_count || 0;
+  const warning = summary?.warning_count || 0;
+  if (!blocking && !warning) {
+    return "无阻塞/警告";
+  }
+  return `${blocking} 阻塞 / ${warning} 警告`;
+}
+
+function hasReadinessIssues(summary) {
+  return Boolean((summary?.blocking_count || 0) || (summary?.warning_count || 0));
+}
+
+function validationDisclosureText(validation) {
+  if (!validation) {
+    return "尚未运行";
+  }
+  const blocking = validation.blocking_items?.length || 0;
+  const warning = validation.warning_items?.length || 0;
+  if (!blocking && !warning) {
+    return "无阻塞/警告";
+  }
+  return `${blocking} 阻塞 / ${warning} 警告`;
+}
+
+function hasValidationIssues(validation) {
+  return Boolean(
+    (validation?.blocking_items?.length || 0) ||
+      (validation?.warning_items?.length || 0)
+  );
+}
+
+function rollbackDisclosureText(result) {
+  if (!result) {
+    return "尚未检查";
+  }
+  const previewCount = result.destination_preview?.length || 0;
+  const problemCount = rollbackProblemCount(result);
+  return `${previewCount} 项预览 / ${problemCount} 异常`;
+}
+
+function rollbackProblemCount(result) {
+  return [
+    result?.missing_files,
+    result?.incomplete_records,
+    result?.identity_mismatches,
+    result?.target_conflicts,
+  ].reduce((count, items) => count + (Array.isArray(items) ? items.length : 0), 0);
+}
+
+function renderTmdbInfo(info) {
+  els.tmdbInfo.replaceChildren();
+  appendDefinitionItem(els.tmdbInfo, "tmdb", tmdbLinkCell(info?.selected_tmdb_id));
+  appendDefinitionItem(els.tmdbInfo, "title", info?.title_zh_cn || "-");
+  appendDefinitionItem(els.tmdbInfo, "originalName", info?.original_name || "-");
+  appendDefinitionItem(els.tmdbInfo, "year", info?.year || "-");
+  appendDefinitionItem(els.tmdbInfo, "candidates", info?.candidates?.length || 0);
+  appendDefinitionItem(els.tmdbInfo, "episodeCounts", formatSeasonCounts(info?.seasons));
+  renderTmdbSeasonDetails(els.tmdbDetails, info);
+}
+
+function renderTmdbSeasonDetails(target, info) {
+  target.replaceChildren();
+  const seasons = sortedSeasons(info?.seasons);
+  if (seasons.length) {
+    target.append(seasonChipList(seasons));
+  }
+  if (info?.specials?.length) {
+    target.append(specialsDisclosure(info.specials));
+  }
+}
+
+function renderSelectedTmdbBlock(target, info) {
+  target.replaceChildren();
+  if (!info?.selected_tmdb_id) {
+    target.append(empty("生成预览后显示 TMDB 明细"));
+    return;
+  }
+  const block = document.createElement("section");
+  block.className = "tmdb-selected-block";
+  const header = document.createElement("header");
+  const title = document.createElement("strong");
+  title.textContent = info.title_zh_cn || `TMDB ${info.selected_tmdb_id}`;
+  header.append(title, tmdbAnchor(info.selected_tmdb_id, "打开 TMDB"));
+  const meta = document.createElement("div");
+  meta.className = "tmdb-selected-meta";
+  meta.textContent = [
+    info.original_name,
+    info.year ? `${info.year}` : "",
+    formatSeasonCounts(info.seasons),
+  ].filter(Boolean).join(" · ");
+  block.append(header, meta);
+  const seasons = sortedSeasons(info.seasons);
+  if (seasons.length) {
+    block.append(seasonChipList(seasons));
+  }
+  if (info.specials?.length) {
+    block.append(specialsDisclosure(info.specials));
+  }
+  target.append(block);
+}
+
+function tmdbLinkCell(tmdbId) {
+  if (!tmdbId) {
+    return "-";
+  }
+  const wrap = document.createElement("span");
+  wrap.className = "tmdb-link-cell";
+  const idText = document.createElement("span");
+  idText.textContent = String(tmdbId);
+  wrap.append(idText, tmdbAnchor(tmdbId, "打开"));
+  return wrap;
+}
+
+function tmdbAnchor(tmdbId, text) {
+  const link = document.createElement("a");
+  link.href = tmdbTvUrl(tmdbId);
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = text;
+  return link;
+}
+
+function textSpan(text) {
+  const span = document.createElement("span");
+  span.textContent = text;
+  return span;
+}
+
+function tmdbTvUrl(tmdbId) {
+  return `https://www.themoviedb.org/tv/${encodeURIComponent(String(tmdbId))}`;
+}
+
+function formatSeasonCounts(seasons) {
+  const labels = sortedSeasons(seasons).map(seasonCountLabel);
+  return labels.join(" / ") || "-";
+}
+
+function sortedSeasons(seasons) {
+  if (!Array.isArray(seasons)) {
+    return [];
+  }
+  return seasons
+    .filter((season) => Number.isInteger(Number(season.season_number)))
+    .slice()
+    .sort((left, right) => Number(left.season_number) - Number(right.season_number));
+}
+
+function seasonCountLabel(season) {
+  const seasonNumber = Number(season.season_number);
+  const count = Number(season.episode_count || 0);
+  return `S${pad2(seasonNumber)} ${count}集`;
+}
+
+function seasonChipList(seasons) {
+  const list = document.createElement("div");
+  list.className = "season-chip-list";
+  for (const season of seasons) {
+    const chip = document.createElement("span");
+    chip.className = "season-chip";
+    chip.textContent = seasonCountLabel(season);
+    list.append(chip);
+  }
+  return list;
+}
+
+function specialsDisclosure(specials) {
+  const details = document.createElement("details");
+  details.className = "tmdb-specials disclosure-details";
+  const summary = document.createElement("summary");
+  const label = document.createElement("span");
+  label.className = "disclosure-label";
+  label.textContent = "特别篇";
+  const status = document.createElement("span");
+  status.className = "disclosure-status";
+  status.textContent = `${specials.length} 个`;
+  summary.append(label, status);
+  const list = document.createElement("div");
+  list.className = "tmdb-special-list";
+  for (const item of specials.slice(0, 20)) {
+    const rowNode = document.createElement("div");
+    rowNode.className = "tmdb-special-row";
+    rowNode.textContent = [
+      `S00E${pad2(item.episode_number)}`,
+      item.name,
+      item.air_date,
+    ].filter(Boolean).join(" · ");
+    list.append(rowNode);
+  }
+  if (specials.length > 20) {
+    list.append(empty(`还有 ${specials.length - 20} 个特别篇未显示`));
+  }
+  details.append(summary, list);
+  return details;
+}
+
 function renderReadinessDetails(summary) {
   els.readinessDetails.replaceChildren();
   const refs = summary?.affected_refs || {};
@@ -977,22 +1230,34 @@ function renderTmdbCandidates(info) {
   }
   const currentValue = Number(els.tmdbInput.value);
   for (const candidate of candidates) {
+    const item = document.createElement("div");
+    item.className = `tmdb-candidate${candidate.id === currentValue ? " selected" : ""}`;
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `tmdb-candidate${candidate.id === currentValue ? " selected" : ""}`;
+    button.className = "tmdb-candidate-select";
     button.title = `填入 TMDB ID ${candidate.id}`;
     const title = candidate.name || candidate.original_name || `TMDB ${candidate.id}`;
     const year = candidate.year || yearFromDate(candidate.first_air_date) || "-";
     const countries = Array.isArray(candidate.origin_country)
       ? candidate.origin_country.join(", ")
       : "";
+    const popularity = candidate.popularity ?? "-";
+    const votes = candidate.vote_count ?? "-";
     button.innerHTML = `
       <strong>${escapeHtml(title)}</strong>
       <span>${escapeHtml(candidate.id)} · ${escapeHtml(year)}${countries ? ` · ${escapeHtml(countries)}` : ""}</span>
       <span>${escapeHtml(candidate.original_name || "")}</span>
     `;
     button.addEventListener("click", () => selectTmdbCandidate(candidate.id));
-    els.tmdbCandidates.append(button);
+    const meta = document.createElement("div");
+    meta.className = "tmdb-candidate-meta";
+    meta.append(
+      textSpan(`热度 ${popularity}`),
+      textSpan(`投票 ${votes}`),
+      tmdbAnchor(candidate.id, "TMDB"),
+    );
+    item.append(button, meta);
+    els.tmdbCandidates.append(item);
   }
 }
 
@@ -1571,9 +1836,13 @@ async function previewRematch() {
   els.previewRematch.disabled = true;
   clearNotice();
   try {
+    const additionalInstructions = normalizedRematchInstructions();
     const payload = {
       tmdb_id: tmdbId,
       base_review_revision: state.review.versions.review_revision,
+      ...(additionalInstructions
+        ? { additional_instructions: additionalInstructions }
+        : {}),
     };
     const result = await api(`/api/v1/jobs/${jobId}/rematch-preview`, {
       method: "POST",
@@ -1781,7 +2050,10 @@ function rematchCommitConfirmation(preview) {
     title: "提交预览为计划",
     summary: `将提交 TMDB ${preview.tmdb_id} 的重匹配预览。已变更 ${diff.changed || 0}，新增 ${diff.added || 0}，已移除 ${diff.removed || 0}。`,
     confirmLabel: "提交预览",
-    notes: [`预览操作：${preview.operation_id}`],
+    notes: [
+      `预览操作：${preview.operation_id}`,
+      `附加提示：${labelFor(instructionPreviewLabel(preview))}`,
+    ],
     items: confirmationItems(items, (item) => ({
       label: `移动项 ${item.move_item_id || item.source_id || "-"}`,
       meta: item.change_type || item.status || item.kind,
@@ -1969,6 +2241,13 @@ function buildCorrectionOps() {
 
 function renderRollbackDetails(result) {
   els.rollbackDetails.replaceChildren();
+  updateDisclosureSummary(
+    els.rollbackDetailsDisclosure,
+    els.rollbackDetailsSummary,
+    "回撤明细",
+    rollbackDisclosureText(result),
+    rollbackProblemCount(result) > 0,
+  );
   if (!result) {
     return;
   }
@@ -1985,14 +2264,17 @@ function renderRollbackDetails(result) {
   appendRollbackProblems("missing", result.missing_files);
   appendRollbackProblems("incomplete", result.incomplete_records);
   appendRollbackProblems("identity", result.identity_mismatches);
+  appendRollbackProblems("blocking", result.target_conflicts);
 }
 
 function renderRematchPreview(result) {
   els.rematchRows.replaceChildren();
   if (!result) {
+    renderSelectedTmdbBlock(els.rematchTmdbDetails, null);
     renderDefinitionList(els.rematchInfo, {
       status: "not checked",
       tmdb: "-",
+      instructions: "unused",
       changed: 0,
       added: 0,
       removed: 0,
@@ -2001,12 +2283,16 @@ function renderRematchPreview(result) {
     return;
   }
   const diff = result.diff_summary || {};
+  renderSelectedTmdbBlock(els.rematchTmdbDetails, result.selected_tmdb_info);
   renderDefinitionList(els.rematchInfo, {
     status: result.status,
     operation: result.operation_id,
     baseRev: result.base_review_revision,
     tmdb: result.tmdb_id,
     title: result.selected_tmdb_info?.title_zh_cn || "-",
+    originalName: result.selected_tmdb_info?.original_name || "-",
+    year: result.selected_tmdb_info?.year || "-",
+    instructions: instructionPreviewLabel(result),
     validation: result.validation_summary?.status || "-",
     changed: diff.changed || 0,
     added: diff.added || 0,
@@ -2053,12 +2339,20 @@ function appendRollbackProblems(label, items) {
 function renderDefinitionList(target, data) {
   target.replaceChildren();
   for (const [key, value] of Object.entries(data)) {
-    const dt = document.createElement("dt");
-    dt.textContent = labelFor(key);
-    const dd = document.createElement("dd");
-    dd.textContent = labelFor(value);
-    target.append(dt, dd);
+    appendDefinitionItem(target, key, value);
   }
+}
+
+function appendDefinitionItem(target, key, value) {
+  const dt = document.createElement("dt");
+  dt.textContent = labelFor(key);
+  const dd = document.createElement("dd");
+  if (value instanceof Node) {
+    dd.append(value);
+  } else {
+    dd.textContent = labelFor(value);
+  }
+  target.append(dt, dd);
 }
 
 function row(cells) {
@@ -2088,11 +2382,46 @@ function operationResultCell(value) {
   const details = document.createElement("details");
   details.className = "operation-result";
   const summary = document.createElement("summary");
-  summary.textContent = compactJson(value);
+  summary.textContent = operationResultSummary(value);
   const pre = document.createElement("pre");
   pre.textContent = JSON.stringify(value || {}, null, 2);
   details.append(summary, pre);
   return details;
+}
+
+function operationResultSummary(value) {
+  if (!value || typeof value !== "object") {
+    return "查看 JSON";
+  }
+  const parts = [];
+  for (const [key, label] of [
+    ["status", "状态"],
+    ["checked", "已检查"],
+    ["applied_move_item_count", "已应用"],
+    ["withdrawn_move_item_count", "已回撤"],
+    ["reopened_move_item_count", "已重新打开"],
+    ["committed_move_item_count", "已提交"],
+    ["changed", "已变更"],
+    ["added", "新增"],
+    ["removed", "已移除"],
+  ]) {
+    if (value[key] !== undefined && value[key] !== null) {
+      parts.push(`${label} ${labelFor(value[key])}`);
+    }
+  }
+  if (value.item_result_summary && typeof value.item_result_summary === "object") {
+    const summary = value.item_result_summary;
+    for (const [key, label] of [
+      ["checked", "已检查"],
+      ["succeeded", "成功"],
+      ["failed", "失败"],
+    ]) {
+      if (summary[key] !== undefined && summary[key] !== null) {
+        parts.push(`${label} ${summary[key]}`);
+      }
+    }
+  }
+  return parts.slice(0, 3).join(" / ") || "查看 JSON";
 }
 
 function formatDateTime(value) {
@@ -2153,6 +2482,21 @@ function validationMatchesReview(validation, review) {
     validation.validated_move_plan_version === review.versions.move_plan_version &&
     validation.checked_move_state_revision === review.versions.move_state_revision
   );
+}
+
+function instructionPreviewLabel(result) {
+  if (!result?.additional_instructions_present) {
+    return "unused";
+  }
+  const digest = result.additional_instructions_digest
+    ? result.additional_instructions_digest.slice(0, 12)
+    : "-";
+  return `used · ${result.additional_instructions_length || 0} 字 · ${digest}`;
+}
+
+function normalizedRematchInstructions() {
+  const value = els.rematchInstructions.value.trim();
+  return value || "";
 }
 
 function optionalPositiveInt(value) {
@@ -2242,6 +2586,7 @@ function clearDetail(options = {}) {
   els.submitCorrection.disabled = true;
   if (!options.preserveTmdbInput) {
     els.tmdbInput.value = "";
+    els.rematchInstructions.value = "";
     state.tmdbInputSeededJobId = null;
     state.tmdbInputEditedJobId = null;
   }
@@ -2250,6 +2595,7 @@ function clearDetail(options = {}) {
     els.readiness,
     els.readinessDetails,
     els.tmdbInfo,
+    els.tmdbDetails,
     els.tmdbCandidates,
     els.safetyInfo,
     els.validationInfo,
@@ -2261,6 +2607,7 @@ function clearDetail(options = {}) {
     els.moveRows,
     els.operationRows,
     els.rematchInfo,
+    els.rematchTmdbDetails,
     els.rematchRows,
   ]) {
     target.replaceChildren();
@@ -2268,6 +2615,34 @@ function clearDetail(options = {}) {
   els.evidenceList.replaceChildren();
   els.rollbackDetails.replaceChildren();
   renderNoJobEmptyState();
+  updateDisclosureSummary(
+    els.readinessDetailsDisclosure,
+    els.readinessDetailsSummary,
+    "就绪明细",
+    "选择 job 后显示",
+    false,
+  );
+  updateDisclosureSummary(
+    els.tmdbCandidatesDisclosure,
+    els.tmdbCandidatesSummary,
+    "TMDB 候选",
+    "选择 job 后显示",
+    false,
+  );
+  updateDisclosureSummary(
+    els.validationDetailsDisclosure,
+    els.validationDetailsSummary,
+    "验证明细",
+    "选择 job 后显示",
+    false,
+  );
+  updateDisclosureSummary(
+    els.rollbackDetailsDisclosure,
+    els.rollbackDetailsSummary,
+    "回撤明细",
+    "选择 job 后显示",
+    false,
+  );
   setRollbackStep(
     els.rollbackSafetyStep,
     els.rollbackSafetyStatus,
@@ -2291,6 +2666,7 @@ function clearDetail(options = {}) {
 function renderNoJobEmptyState() {
   const text = "选择 job 后显示";
   els.readinessDetails.append(empty(text));
+  els.tmdbDetails.append(empty(text));
   els.tmdbCandidates.append(empty(text));
   els.validationDetails.append(empty(text));
   els.rollbackDetails.append(empty(text));
@@ -2299,6 +2675,7 @@ function renderNoJobEmptyState() {
   els.fileRows.append(emptyTableRow(6, text));
   els.moveRows.append(emptyTableRow(7, text));
   els.operationRows.append(emptyTableRow(5, text));
+  els.rematchTmdbDetails.append(empty(text));
   els.rematchRows.append(emptyTableRow(5, text));
   els.evidenceList.append(empty(text));
 }

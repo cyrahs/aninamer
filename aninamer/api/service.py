@@ -584,6 +584,9 @@ class ApiService:
             source_files,
             snapshot=_snapshot_revision_payload(snapshot),
         )
+        instruction_metadata = _additional_instructions_metadata(
+            payload.additional_instructions
+        )
         if payload.base_review_revision != current_versions["review_revision"]:
             raise ApiServiceError(
                 status_code=412,
@@ -608,6 +611,7 @@ class ApiService:
                 "tmdb_id": payload.tmdb_id,
                 "status": "running_preview",
                 "claim_token": claim_token,
+                **instruction_metadata,
             },
             status="running",
         )
@@ -632,7 +636,11 @@ class ApiService:
                 details={"operation_id": operation.id, "status": operation.status},
             )
         try:
-            preview = self.worker.build_rematch_preview(job, tmdb_id=payload.tmdb_id)
+            preview = self.worker.build_rematch_preview(
+                job,
+                tmdb_id=payload.tmdb_id,
+                additional_instructions=payload.additional_instructions,
+            )
             response_payload = _rematch_preview_payload(
                 operation.id,
                 payload,
@@ -646,6 +654,7 @@ class ApiService:
                 result_summary={
                     "tmdb_id": payload.tmdb_id,
                     "status": "preview_ready",
+                    **instruction_metadata,
                     "response_payload": response_payload,
                 },
             )
@@ -661,6 +670,7 @@ class ApiService:
                 result_summary={
                     "tmdb_id": payload.tmdb_id,
                     "status": "failed",
+                    **instruction_metadata,
                 },
             )
             raise
@@ -2568,6 +2578,7 @@ def _rematch_preview_payload(
         "status": "preview_ready",
         "tmdb_id": request.tmdb_id,
         "base_review_revision": request.base_review_revision,
+        **_additional_instructions_metadata(request.additional_instructions),
         "selected_tmdb_info": _preview_tmdb_info(preview).model_dump(mode="json"),
         "episode_targets": [
             target.model_dump(mode="json") for target in episode_targets
@@ -2664,6 +2675,7 @@ def _rematch_commit_snapshot_payload(
             tmdb_id=tmdb_id,
             mapped_video_count=len(committed_targets),
             mapped_subtitle_count=len(committed_links),
+            preview_payload=preview_payload,
         ),
         "mapping_evidence": _append_rematch_evidence(
             existing_mapping_evidence,
@@ -2699,6 +2711,7 @@ def _rematch_commit_result_summary(
         "preview_operation_id": payload.preview_operation_id,
         "tmdb_id": payload.tmdb_id,
         "base_review_revision": payload.base_review_revision,
+        **_additional_instructions_metadata_from_preview(preview_payload),
         "selected_tmdb_info": selected_info.model_dump(mode="json"),
         "diff_summary": preview_payload.get("diff_summary", {}),
         "committed_move_item_count": committed_move_count,
@@ -2708,6 +2721,7 @@ def _rematch_commit_result_summary(
         "preview_operation_id": payload.preview_operation_id,
         "status": "committed",
         "committed_move_item_count": committed_move_count,
+        **_additional_instructions_metadata_from_preview(preview_payload),
         "response_payload": response_payload,
     }
 
@@ -3424,8 +3438,12 @@ def _append_rematch_attempt(
     tmdb_id: int,
     mapped_video_count: int,
     mapped_subtitle_count: int,
+    preview_payload: dict[str, object],
 ) -> list[dict[str, object]]:
     attempts = list(existing_attempts)
+    instruction_metadata = _additional_instructions_metadata_from_preview(
+        preview_payload
+    )
     attempts.append(
         {
             "id": len(attempts) + 1,
@@ -3435,6 +3453,7 @@ def _append_rematch_attempt(
             "status": "succeeded",
             "mapped_video_count": mapped_video_count,
             "mapped_subtitle_count": mapped_subtitle_count,
+            **instruction_metadata,
         }
     )
     return attempts
@@ -3839,6 +3858,37 @@ def _source_file_from_move(job: JobRecord, move: JobMoveRecord) -> ReviewSourceF
 def _payload_hash(payload: dict[str, object]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _additional_instructions_metadata(
+    additional_instructions: str | None,
+) -> dict[str, object]:
+    if not additional_instructions:
+        return {
+            "additional_instructions_present": False,
+            "additional_instructions_digest": None,
+            "additional_instructions_length": 0,
+        }
+    return {
+        "additional_instructions_present": True,
+        "additional_instructions_digest": hashlib.sha256(
+            additional_instructions.encode("utf-8")
+        ).hexdigest(),
+        "additional_instructions_length": len(additional_instructions),
+    }
+
+
+def _additional_instructions_metadata_from_preview(
+    preview_payload: dict[str, object],
+) -> dict[str, object]:
+    present = bool(preview_payload.get("additional_instructions_present"))
+    digest = preview_payload.get("additional_instructions_digest")
+    length = preview_payload.get("additional_instructions_length")
+    return {
+        "additional_instructions_present": present,
+        "additional_instructions_digest": digest if isinstance(digest, str) else None,
+        "additional_instructions_length": length if isinstance(length, int) else 0,
+    }
 
 
 def _now_iso() -> str:

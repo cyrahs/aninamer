@@ -460,6 +460,7 @@ def build_rename_plan_result_for_series(
     llm_for_tmdb_id_factory: Callable[[], LLMClient] | None = None,
     llm_for_mapping_factory: Callable[[], LLMClient] | None = None,
     llm_failure_recorder: Callable[[str, int, str, str], None] | None = None,
+    additional_mapping_instructions: str | None = None,
 ) -> PlanBuildResult:
     scan = scan_series_dir(series_dir)
     if tmdb_client_factory is None:
@@ -591,6 +592,7 @@ def build_rename_plan_result_for_series(
             existing_inventory.occupied_episode_numbers_by_season
         ),
         existing_s00_files=existing_inventory.existing_s00_files,
+        additional_instructions=additional_mapping_instructions,
         llm=llm_for_mapping,
         max_output_tokens=options.max_output_tokens,
         on_invalid_reply=_llm_failure_callback(
@@ -633,6 +635,7 @@ def build_rename_plan_for_series(
     llm_for_tmdb_id_factory: Callable[[], LLMClient] | None = None,
     llm_for_mapping_factory: Callable[[], LLMClient] | None = None,
     llm_failure_recorder: Callable[[str, int, str, str], None] | None = None,
+    additional_mapping_instructions: str | None = None,
 ) -> RenamePlan:
     return build_rename_plan_result_for_series(
         series_dir=series_dir,
@@ -643,6 +646,7 @@ def build_rename_plan_for_series(
         llm_for_tmdb_id_factory=llm_for_tmdb_id_factory,
         llm_for_mapping_factory=llm_for_mapping_factory,
         llm_failure_recorder=llm_failure_recorder,
+        additional_mapping_instructions=additional_mapping_instructions,
     ).plan
 
 

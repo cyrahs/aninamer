@@ -43,14 +43,15 @@
           <article class="summary-card summary-card-wide">
             <h3>就绪状态</h3>
             <dl id="readiness"></dl>
-            <details class="summary-details">
-              <summary>就绪明细</summary>
+            <details id="readinessDetailsDisclosure" class="summary-details disclosure-details">
+              <summary id="readinessDetailsSummary">就绪明细</summary>
               <div id="readinessDetails" class="detail-list"></div>
             </details>
           </article>
           <article class="summary-card">
             <h3>TMDB</h3>
             <dl id="tmdbInfo"></dl>
+            <div id="tmdbDetails" class="tmdb-detail-block"></div>
           </article>
           <article class="summary-card">
             <h3>安全状态</h3>
@@ -72,10 +73,14 @@
                 TMDB ID
                 <input id="tmdbInput" name="tmdbInput" type="number" min="1" inputmode="numeric" />
               </label>
+              <label class="rematch-instructions-field">
+                附加提示
+                <textarea id="rematchInstructions" name="rematchInstructions" maxlength="2000" rows="3" placeholder="例如：文件集数比 TMDB 偏移 +1，只匹配正片"></textarea>
+              </label>
               <button id="previewRematch" type="submit" disabled>预览重匹配</button>
             </form>
-            <details class="workflow-details">
-              <summary>TMDB 候选</summary>
+            <details id="tmdbCandidatesDisclosure" class="workflow-details disclosure-details">
+              <summary id="tmdbCandidatesSummary">TMDB 候选</summary>
               <div id="tmdbCandidates" class="tmdb-candidates"></div>
             </details>
           </article>
@@ -92,8 +97,8 @@
               </div>
             </div>
             <dl id="validationInfo"></dl>
-            <details class="workflow-details">
-              <summary>验证明细</summary>
+            <details id="validationDetailsDisclosure" class="workflow-details disclosure-details">
+              <summary id="validationDetailsSummary">验证明细</summary>
               <div id="validationDetails" class="detail-list"></div>
             </details>
           </article>
@@ -135,8 +140,8 @@
                 <button id="reopenFromReview" type="button" disabled>重新打开</button>
               </div>
             </div>
-            <details class="workflow-details">
-              <summary>回撤明细</summary>
+            <details id="rollbackDetailsDisclosure" class="workflow-details disclosure-details">
+              <summary id="rollbackDetailsSummary">回撤明细</summary>
               <div id="rollbackDetails" class="detail-list"></div>
             </details>
           </article>
@@ -271,6 +276,7 @@
                   <div class="section-heading">
                     <h3>重匹配预览</h3>
                   </div>
+                  <div id="rematchTmdbDetails" class="tmdb-preview-block"></div>
                   <dl id="rematchInfo"></dl>
                   <div class="table-wrap rematch-table">
                     <table>

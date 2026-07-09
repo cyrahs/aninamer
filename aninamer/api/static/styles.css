@@ -29,7 +29,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -169,7 +170,7 @@ dt,
 
 .rematch-form {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(120px, 160px) minmax(0, 1fr);
   align-items: end;
   gap: 8px;
 }
@@ -181,12 +182,24 @@ dt,
   font-size: 12px;
 }
 
-.rematch-form input {
+.rematch-form input,
+.rematch-form textarea {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   min-height: 34px;
   padding: 0 10px;
+}
+
+.rematch-form textarea {
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.rematch-form button {
+  grid-column: 1 / -1;
+  justify-self: end;
 }
 
 .job-list {
@@ -400,18 +413,19 @@ dd {
 
 .tmdb-candidates {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   margin-top: 8px;
 }
 
 .tmdb-candidate {
-  display: grid;
-  gap: 2px;
-  width: 100%;
-  min-height: 0;
-  padding: 8px;
-  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
   background: #fbfcfd;
+  padding: 8px;
+}
+
+.tmdb-candidate:hover {
+  border-color: #b7c7d8;
 }
 
 .tmdb-candidate.selected {
@@ -419,7 +433,113 @@ dd {
   background: #eef8f5;
 }
 
-.tmdb-candidate span {
+.tmdb-candidate-select {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  text-align: left;
+  border: 0;
+  background: transparent;
+}
+
+.tmdb-candidate-select:hover:not(:disabled) {
+  border-color: transparent;
+}
+
+.tmdb-candidate-select span,
+.tmdb-candidate-meta {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.tmdb-candidate-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.tmdb-link-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+a {
+  color: var(--accent-strong);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.tmdb-detail-block,
+.tmdb-preview-block {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.season-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.season-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid #c8d4df;
+  border-radius: 999px;
+  background: #f7f9fb;
+  color: #405061;
+  padding: 0 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.tmdb-specials {
+  border-top: 1px solid var(--line);
+  padding-top: 4px;
+}
+
+.tmdb-special-list {
+  display: grid;
+  gap: 4px;
+  max-height: 180px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.tmdb-special-row {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.tmdb-selected-block {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+
+.tmdb-selected-block header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.tmdb-selected-meta {
   color: var(--muted);
   overflow-wrap: anywhere;
 }
@@ -677,6 +797,53 @@ td .path {
   font-weight: 600;
 }
 
+.disclosure-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 32px;
+  padding: 6px 0;
+  list-style: none;
+}
+
+.disclosure-details summary::marker {
+  content: "";
+}
+
+.disclosure-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure-details summary::after {
+  content: "展开";
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.disclosure-details[open] summary::after {
+  content: "收起";
+  border-color: #b7d8d0;
+  color: var(--accent-strong);
+  background: #eef8f5;
+}
+
+.disclosure-label,
+.disclosure-status {
+  min-width: 0;
+}
+
+.disclosure-status {
+  color: var(--muted);
+  font-weight: 500;
+  text-align: right;
+}
+
 .workflow-details .detail-list,
 .workflow-details .tmdb-candidates {
   max-height: 220px;
@@ -856,6 +1023,7 @@ td .path {
 
   .topbar-actions,
   .topbar-actions button,
+  .rematch-form button,
   .button-pair button {
     width: 100%;
   }

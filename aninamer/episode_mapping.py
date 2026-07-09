@@ -194,6 +194,7 @@ def map_episodes_with_llm(
     scan: ScanResult,
     existing_episode_numbers_by_season: Mapping[int, Sequence[int]] | None = None,
     existing_s00_files: Sequence[str] | None = None,
+    additional_instructions: str | None = None,
     llm: LLMClient,
     max_output_tokens: int = 2048,
     max_attempts: int = 3,
@@ -222,6 +223,7 @@ def map_episodes_with_llm(
         subtitles=scan.subtitles,
         existing_episode_numbers_by_season=existing_episode_numbers_by_season,
         existing_s00_files=existing_s00_files,
+        additional_instructions=additional_instructions,
     )
     logger.debug(
         "episode_map: llm_prompt=%s",

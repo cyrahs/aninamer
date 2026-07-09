@@ -69,6 +69,26 @@ def _path_ref(path: str) -> PathRef:
     )
 
 
+def test_rematch_preview_request_normalizes_additional_instructions() -> None:
+    payload = RematchPreviewRequest(
+        tmdb_id=123,
+        base_review_revision=1,
+        additional_instructions="  集数偏移 +1\n  ",
+    )
+    assert payload.additional_instructions == "集数偏移 +1"
+    assert RematchPreviewRequest(
+        tmdb_id=123,
+        base_review_revision=1,
+        additional_instructions="   ",
+    ).additional_instructions is None
+    with pytest.raises(ValueError):
+        RematchPreviewRequest(
+            tmdb_id=123,
+            base_review_revision=1,
+            additional_instructions="x" * 2001,
+        )
+
+
 def _source_file(source_id: int, kind: str, rel_path: str) -> ReviewSourceFile:
     return ReviewSourceFile(
         id=source_id,
@@ -3459,9 +3479,15 @@ def test_rematch_preview_does_not_resolve_env_current_move_paths(
             )
 
     class FakeWorker:
-        def build_rematch_preview(self, job, tmdb_id):  # noqa: ANN001, ANN201
+        def build_rematch_preview(  # noqa: ANN001, ANN201
+            self,
+            job,
+            tmdb_id,
+            additional_instructions=None,
+        ):
             assert job.id == context.job.id
             assert tmdb_id == 123
+            assert additional_instructions is None
             return preview
 
     response = ApiService(store=FakeStore(), worker=FakeWorker()).rematch_preview(  # type: ignore[arg-type]
@@ -5004,8 +5030,12 @@ def test_frontend_renders_clickable_tmdb_candidates() -> None:
         "candidate.original_name",
         "candidate.first_air_date",
         "candidate.origin_country",
+        "candidate.popularity",
+        "candidate.vote_count",
+        "tmdbAnchor(candidate.id, \"TMDB\")",
         "selectTmdbCandidate(candidate.id)",
-        "els.tmdbCandidates.append(button)",
+        "item.append(button, meta)",
+        "els.tmdbCandidates.append(item)",
     ]:
         assert expected in candidates_body
 
@@ -5023,7 +5053,81 @@ def test_frontend_renders_clickable_tmdb_candidates() -> None:
     for selector in [
         ".tmdb-candidates",
         ".tmdb-candidate",
+        ".tmdb-candidate-select",
+        ".tmdb-candidate-meta",
         ".tmdb-candidate.selected",
+    ]:
+        assert selector in css
+
+
+def test_frontend_renders_tmdb_details_disclosures_and_rematch_instructions() -> None:
+    html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    css = Path("aninamer/api/static/styles.css").read_text(encoding="utf-8")
+
+    for element_id in [
+        "tmdbDetails",
+        "rematchTmdbDetails",
+        "rematchInstructions",
+        "readinessDetailsSummary",
+        "tmdbCandidatesSummary",
+        "validationDetailsSummary",
+        "rollbackDetailsSummary",
+    ]:
+        assert f'id="{element_id}"' in html
+        assert f'querySelector("#{element_id}")' in source
+
+    render_body = source[
+        source.index("function renderReview()")
+        : source.index("function isWriteBusy()")
+    ]
+    for expected in [
+        "renderTmdbInfo(review.selected_tmdb_info)",
+        "updateDisclosureSummary(",
+        "readinessDisclosureText(review.readiness_summary)",
+        "validationDisclosureText(validationForJob)",
+        "review.selected_tmdb_info.candidates.length > 0",
+    ]:
+        assert expected in render_body
+
+    for helper in [
+        "function renderTmdbInfo",
+        "function renderSelectedTmdbBlock",
+        "function tmdbAnchor",
+        "function formatSeasonCounts",
+        "function specialsDisclosure",
+        "function updateDisclosureSummary",
+        "https://www.themoviedb.org/tv/",
+    ]:
+        assert helper in source
+
+    input_listener = source[
+        source.index('els.rematchInstructions.addEventListener("input"')
+        : source.index("const tabButtons")
+    ]
+    assert "state.rematchPreview = null" in input_listener
+    assert "state.rematchPreviewGeneration += 1" in input_listener
+
+    preview_body = source[
+        source.index("async function previewRematch")
+        : source.index("async function commitRematch")
+    ]
+    assert "normalizedRematchInstructions()" in preview_body
+    assert "additional_instructions: additionalInstructions" in preview_body
+
+    rematch_preview_body = source[
+        source.index("function renderRematchPreview")
+        : source.index("function rematchChangeMode")
+    ]
+    assert "renderSelectedTmdbBlock(els.rematchTmdbDetails" in rematch_preview_body
+    assert "instructionPreviewLabel(result)" in rematch_preview_body
+
+    for selector in [
+        ".disclosure-details summary",
+        ".season-chip",
+        ".tmdb-selected-block",
+        ".tmdb-specials",
+        ".rematch-form textarea",
     ]:
         assert selector in css
 
@@ -5316,13 +5420,15 @@ def test_frontend_operations_tab_formats_time_and_expands_json() -> None:
         'document.createElement("details")',
         'details.className = "operation-result"',
         'document.createElement("summary")',
-        "summary.textContent = compactJson(value)",
+        "summary.textContent = operationResultSummary(value)",
         'document.createElement("pre")',
         "pre.textContent = JSON.stringify(value || {}, null, 2)",
         "details.append(summary, pre)",
     ]:
         assert expected in result_cell_body
     assert "innerHTML" not in result_cell_body
+    assert "function operationResultSummary" in result_cell_body
+    assert "查看 JSON" in result_cell_body
 
     date_body = source[
         source.index("function formatDateTime")

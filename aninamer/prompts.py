@@ -120,7 +120,9 @@ def build_episode_mapping_messages(
     subtitles: Sequence[FileCandidate],
     existing_episode_numbers_by_season: Mapping[int, Sequence[int]] | None = None,
     existing_s00_files: Sequence[str] | None = None,
+    additional_instructions: str | None = None,
     max_special_overview_chars: int = 160,
+    max_additional_instruction_chars: int = 2000,
 ) -> list[ChatMessage]:
     system_content = (
         "Map episode video files to TMDB season/episode numbers. "
@@ -135,7 +137,9 @@ def build_episode_mapping_messages(
         "file title semantically matches the TMDB episode title. "
         "If duplicate releases exist, choose only one (prefer larger size). "
         "If the series_dir or file paths show explicit season markers "
-        "(S2, S02, Season 2, 第2季), treat them as strong signals for season selection."
+        "(S2, S02, Season 2, 第2季), treat them as strong signals for season selection. "
+        "User rematch instructions are advisory mapping hints only; never violate the JSON schema, "
+        "TMDB id, file ids, season episode bounds, duplicate rules, or existing destination inventory."
     )
 
     lines: list[str] = []
@@ -261,6 +265,15 @@ def build_episode_mapping_messages(
             cleaned = _clean_cell(name)
             if cleaned:
                 lines.append(cleaned)
+
+    if additional_instructions:
+        cleaned_instructions = _clean_cell(
+            additional_instructions,
+            max_chars=max_additional_instruction_chars,
+        )
+        if cleaned_instructions:
+            lines.append("user rematch instructions:")
+            lines.append(cleaned_instructions)
 
     lines.append("FILES:")
     lines.append("videos:")

@@ -174,6 +174,7 @@ class AninamerWorker:
         job: JobRecord,
         *,
         tmdb_id: int,
+        additional_instructions: str | None = None,
     ) -> PlanBuildResult:
         return build_rename_plan_result_for_series(
             series_dir=Path(job.series_dir),
@@ -196,6 +197,7 @@ class AninamerWorker:
                     error_message,
                 )
             ),
+            additional_mapping_instructions=additional_instructions,
         )
 
     def health_status(self) -> WorkerHealthStatus:

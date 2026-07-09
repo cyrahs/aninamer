@@ -150,3 +150,31 @@ def test_build_episode_mapping_messages_guides_semantic_match_after_existing_inv
     assert "S01|1" in user
     assert "S01|2|崩れないオンナ|" in user
     assert "1|クール de M ～崩れないオンナ～ [中文字幕] [404988].mp4|100" in user
+
+
+def test_build_episode_mapping_messages_includes_sanitized_rematch_instructions() -> None:
+    messages = build_episode_mapping_messages(
+        tmdb_id=123,
+        series_name_zh_cn="测试动画",
+        year=2024,
+        series_dir="测试动画",
+        season_episode_counts={1: 12},
+        regular_seasons_zh={},
+        regular_seasons_en={},
+        specials_zh=None,
+        specials_en=None,
+        videos=[
+            FileCandidate(id=1, rel_path="ep|01\n.mkv", ext=".mkv", size_bytes=100)
+        ],
+        subtitles=[],
+        additional_instructions="  文件名集数比 TMDB 偏移 +1\n不要匹配预告|PV  ",
+    )
+
+    assert "Output ONLY valid JSON" in messages[0].content
+    assert "User rematch instructions are advisory mapping hints only" in messages[
+        0
+    ].content
+    user = messages[1].content
+    assert "user rematch instructions:" in user
+    assert "文件名集数比 TMDB 偏移 +1 不要匹配预告 PV" in user
+    assert "不要匹配预告|PV" not in user
