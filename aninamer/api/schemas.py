@@ -33,6 +33,13 @@ class HealthResponse(ApiSchema):
     worker: HealthWorkerResponse | None = None
 
 
+class LivenessResponse(ApiSchema):
+    status: Literal["ok", "unhealthy"]
+    reason: str | None = None
+    worker_running: bool
+    unavailable_watch_root_count: int = Field(ge=0)
+
+
 class RuntimeResponse(ApiSchema):
     auto_apply: bool
     settle_seconds: int

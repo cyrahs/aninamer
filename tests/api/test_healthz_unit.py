@@ -14,7 +14,7 @@ from aninamer.config import (
     WatchRootConfig,
     WorkerConfig,
 )
-from aninamer.worker import WorkerHealthStatus
+from aninamer.worker import WorkerHealthStatus, WorkerLivenessStatus
 
 
 class DummyWorker:
@@ -33,6 +33,14 @@ class DummyWorker:
             consecutive_failures=3,
             stale_after_seconds=300,
             unavailable_watch_root_keys=("anime",),
+        )
+
+    def liveness_status(self) -> WorkerLivenessStatus:
+        return WorkerLivenessStatus(
+            live=False,
+            reason="storage unavailable",
+            running=True,
+            unavailable_watch_root_keys=("anime", "hanime"),
         )
 
 
@@ -97,4 +105,45 @@ def test_healthz_openapi_documents_unhealthy_response(tmp_path: Path) -> None:
     assert (
         health_responses["503"]["content"]["application/json"]["schema"]["$ref"]
         == "#/components/schemas/HealthResponse"
+    )
+
+
+def test_public_livez_reports_storage_unavailable_without_raw_paths(
+    tmp_path: Path,
+) -> None:
+    app = create_app(  # type: ignore[arg-type]
+        _config(tmp_path),
+        store=object(),
+        worker=DummyWorker(),
+    )
+
+    route = next(route for route in app.routes if getattr(route, "path", None) == "/livez")
+    response = Response()
+    payload_model = route.endpoint(response)
+    payload = payload_model.model_dump(mode="json", exclude_none=True)
+
+    assert response.status_code == 503
+    assert payload == {
+        "status": "unhealthy",
+        "reason": "storage unavailable",
+        "worker_running": True,
+        "unavailable_watch_root_count": 2,
+    }
+    assert "/mnt/cd2" not in str(payload)
+
+
+def test_livez_openapi_documents_unhealthy_response(tmp_path: Path) -> None:
+    app = create_app(  # type: ignore[arg-type]
+        _config(tmp_path),
+        store=object(),
+        worker=DummyWorker(),
+    )
+
+    schema = app.openapi()
+
+    live_responses = schema["paths"]["/livez"]["get"]["responses"]
+    assert "503" in live_responses
+    assert (
+        live_responses["503"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/LivenessResponse"
     )

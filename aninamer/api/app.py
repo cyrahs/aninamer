@@ -28,6 +28,7 @@ from .schemas import (
     JobRequestCreate,
     JobRequestResponse,
     JobResponse,
+    LivenessResponse,
     OperationItemResultListResponse,
     OperationListResponse,
     OperationResponse,
@@ -116,6 +117,26 @@ def create_app(
                 ),
             )
         return HealthResponse(status="ok")
+
+    @app.get(
+        "/livez",
+        response_model=LivenessResponse,
+        response_model_exclude_none=True,
+        responses={status.HTTP_503_SERVICE_UNAVAILABLE: {"model": LivenessResponse}},
+        operation_id="getLiveness",
+    )
+    def get_liveness(response: Response) -> LivenessResponse:
+        liveness = runtime.worker.liveness_status()
+        if not liveness.live:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return LivenessResponse(
+            status="ok" if liveness.live else "unhealthy",
+            reason=liveness.reason,
+            worker_running=liveness.running,
+            unavailable_watch_root_count=len(
+                liveness.unavailable_watch_root_keys
+            ),
+        )
 
     def _api_service(request: Request) -> ApiService:
         return request.app.state.runtime.service

@@ -40,6 +40,7 @@ class SeriesDiscoveryResult:
     series_dirs: list[Path]
     unavailable: bool = False
     error_message: str | None = None
+    transient_error: bool = False
 
 
 def is_within(child: Path, root: Path) -> bool:
@@ -123,6 +124,7 @@ def discover_series_dirs_status(input_root: Path) -> SeriesDiscoveryResult:
             series_dirs=[],
             unavailable=True,
             error_message=f"{type(exc).__name__}: {exc}",
+            transient_error=is_transient_filesystem_error(exc),
         )
     series_dirs: list[Path] = []
     unavailable_errors: list[str] = []
@@ -148,6 +150,7 @@ def discover_series_dirs_status(input_root: Path) -> SeriesDiscoveryResult:
             series_dirs=[],
             unavailable=True,
             error_message=unavailable_errors[0],
+            transient_error=True,
         )
     return SeriesDiscoveryResult(series_dirs=series_dirs)
 

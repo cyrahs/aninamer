@@ -30,6 +30,7 @@ def test_discover_series_dirs_returns_empty_when_mount_is_unavailable(
     result = discover_series_dirs_status(tmp_path)
     assert result.series_dirs == []
     assert result.unavailable is True
+    assert result.transient_error is True
     assert result.error_message is not None
     assert "Transport endpoint is not connected" in result.error_message
 
@@ -54,6 +55,7 @@ def test_discover_series_dirs_marks_root_unavailable_when_entries_cannot_stat(
     result = discover_series_dirs_status(tmp_path)
     assert result.series_dirs == []
     assert result.unavailable is True
+    assert result.transient_error is True
     assert result.error_message is not None
     assert "Transport endpoint is not connected" in result.error_message
 

@@ -2891,6 +2891,66 @@ class RuntimeStore:
         assert row is not None
         return self._notification_from_row(row)
 
+    def get_notification_by_dedupe_key(
+        self,
+        dedupe_key: str,
+    ) -> NotificationRecord | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM notifications WHERE dedupe_key = %s",
+                    (dedupe_key,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            return None
+        return self._notification_from_row(row)
+
+    def release_notification_dedupe_key(
+        self,
+        notification_id: int,
+        *,
+        dedupe_key: str,
+    ) -> bool:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE notifications
+                    SET dedupe_key = NULL
+                    WHERE id = %s AND dedupe_key = %s
+                    RETURNING id
+                    """,
+                    (notification_id, dedupe_key),
+                )
+                row = cur.fetchone()
+        return row is not None
+
+    def suppress_notification_delivery(
+        self,
+        notification_id: int,
+        *,
+        reason: str,
+    ) -> NotificationRecord | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE notifications
+                    SET delivery_status = 'disabled',
+                        next_attempt_at = NULL,
+                        last_error = %s
+                    WHERE id = %s
+                      AND delivery_status = ANY(%s)
+                    RETURNING *
+                    """,
+                    (reason, notification_id, ["pending", "retry"]),
+                )
+                row = cur.fetchone()
+        if row is None:
+            return None
+        return self._notification_from_row(row)
+
     def latest_notification_id(self) -> int:
         with self._connect() as conn:
             with conn.cursor() as cur:

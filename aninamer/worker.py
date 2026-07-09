@@ -75,6 +75,8 @@ _EPISODE_TOKEN_RE = re.compile(
     r"\bS(?P<season>\d{2})E(?P<start>\d{2})(?:-E(?P<end>\d{2}))?\b"
 )
 _MAX_NOTIFICATION_EPISODE_SEGMENTS = 4
+_STORAGE_UNAVAILABLE_CONFIRMATION_SCANS = 2
+_STORAGE_UNAVAILABLE_ACTIVE_DEDUPE_KEY = "worker_storage_unavailable:active"
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,20 @@ class WorkerHealthStatus:
     consecutive_failures: int
     stale_after_seconds: int
     unavailable_watch_root_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WorkerLivenessStatus:
+    live: bool
+    reason: str | None
+    running: bool
+    unavailable_watch_root_keys: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _WatchRootScanError:
+    message: str
+    transient: bool
 
 
 @dataclass(frozen=True)
@@ -152,6 +168,9 @@ class AninamerWorker:
         self._last_error_message: str | None = None
         self._consecutive_failures = 0
         self._watch_root_errors: dict[str, str] = {}
+        self._all_watch_roots_unavailable = False
+        self._storage_unavailable_consecutive_scans = 0
+        self._storage_unavailable_confirmed = False
         if config.notifications is None and config.notifications_warning is not None:
             logger.warning(config.notifications_warning)
 
@@ -245,6 +264,26 @@ class AninamerWorker:
             unavailable_watch_root_keys=unavailable_watch_root_keys,
         )
 
+    def liveness_status(self) -> WorkerLivenessStatus:
+        with self._state_lock:
+            running = self._running
+            started_at = self._started_at
+            unavailable_watch_root_keys = tuple(sorted(self._watch_root_errors))
+            storage_unavailable = self._storage_unavailable_confirmed
+
+        reason: str | None = None
+        if not running:
+            reason = "worker has not started" if started_at is None else "worker is not running"
+        elif storage_unavailable:
+            reason = "storage unavailable"
+
+        return WorkerLivenessStatus(
+            live=reason is None,
+            reason=reason,
+            running=running,
+            unavailable_watch_root_keys=unavailable_watch_root_keys,
+        )
+
     def recover(self) -> None:
         recovered_failed_jobs = self._store.recover_incomplete_jobs()
         for job in recovered_failed_jobs:
@@ -255,6 +294,7 @@ class AninamerWorker:
         self._process_job_requests()
         self._clear_missing_failed_jobs()
         self._discover_new_jobs()
+        self._deliver_due_notifications()
         self._process_jobs()
         self._store.set_last_scan_at()
 
@@ -326,13 +366,95 @@ class AninamerWorker:
             self._last_error_message = f"{type(exc).__name__}: {exc}"
             self._consecutive_failures += 1
 
-    def _record_watch_root_available(self, key: str) -> None:
+    def _commit_watch_root_scan(
+        self,
+        errors: dict[str, _WatchRootScanError],
+    ) -> None:
+        target_keys = {target.key for target in self._targets}
+        all_roots_transiently_unavailable = bool(target_keys) and all(
+            key in errors and errors[key].transient for key in target_keys
+        )
         with self._state_lock:
-            self._watch_root_errors.pop(key, None)
+            self._watch_root_errors = {
+                key: error.message for key, error in errors.items()
+            }
+            self._all_watch_roots_unavailable = bool(target_keys) and all(
+                key in errors for key in target_keys
+            )
+            if all_roots_transiently_unavailable:
+                self._storage_unavailable_consecutive_scans += 1
+            else:
+                self._storage_unavailable_consecutive_scans = 0
+            self._storage_unavailable_confirmed = (
+                self._storage_unavailable_consecutive_scans
+                >= _STORAGE_UNAVAILABLE_CONFIRMATION_SCANS
+            )
 
-    def _record_watch_root_unavailable(self, key: str, error_message: str | None) -> None:
+    def _sync_storage_health_notification(self) -> None:
+        if self._config.notifications is None:
+            return
         with self._state_lock:
-            self._watch_root_errors[key] = error_message or "unavailable"
+            storage_unavailable = self._storage_unavailable_confirmed
+            all_roots_unavailable = self._all_watch_roots_unavailable
+            unavailable_keys = tuple(sorted(self._watch_root_errors))
+        try:
+            active = self._store.get_notification_by_dedupe_key(
+                _STORAGE_UNAVAILABLE_ACTIVE_DEDUPE_KEY
+            )
+            if active is None:
+                if not storage_unavailable:
+                    return
+                self._create_notification(
+                    event_kind="worker_storage_unavailable",
+                    payload={
+                        "unavailable_watch_root_keys": list(unavailable_keys),
+                        "unavailable_watch_root_count": len(unavailable_keys),
+                        "watch_root_count": len(self._targets),
+                    },
+                    dedupe_key=_STORAGE_UNAVAILABLE_ACTIVE_DEDUPE_KEY,
+                )
+                return
+            if all_roots_unavailable:
+                return
+            if active.delivery_status != "delivered":
+                if active.delivery_status in {"pending", "retry"}:
+                    suppressed = self._store.suppress_notification_delivery(
+                        active.id,
+                        reason="storage recovered before outage alert was delivered",
+                    )
+                    if suppressed is None:
+                        return
+                released = self._store.release_notification_dedupe_key(
+                    active.id,
+                    dedupe_key=_STORAGE_UNAVAILABLE_ACTIVE_DEDUPE_KEY,
+                )
+                if not released:
+                    logger.warning(
+                        "worker: storage_notification_release_missed notification_id=%s",
+                        active.id,
+                    )
+                return
+            self._create_notification(
+                event_kind="worker_storage_recovered",
+                payload={
+                    "unavailable_watch_root_keys": list(unavailable_keys),
+                    "unavailable_watch_root_count": len(unavailable_keys),
+                    "watch_root_count": len(self._targets),
+                    "outage_notification_id": active.id,
+                },
+                dedupe_key=f"worker_storage_recovered:{active.id}",
+            )
+            released = self._store.release_notification_dedupe_key(
+                active.id,
+                dedupe_key=_STORAGE_UNAVAILABLE_ACTIVE_DEDUPE_KEY,
+            )
+            if not released:
+                logger.warning(
+                    "worker: storage_notification_release_missed notification_id=%s",
+                    active.id,
+                )
+        except Exception as exc:
+            logger.warning("worker: storage_notification_sync_failed error=%s", exc)
 
     def _handle_job_request(self, request: JobRequestRecord) -> None:
         started = self._store.update_job_request(
@@ -402,21 +524,30 @@ class AninamerWorker:
             self._notify_job_request_failed(failed)
 
     def _discover_new_jobs(self) -> None:
+        scan_errors: dict[str, _WatchRootScanError] = {}
         for target in self._targets:
             try:
                 discovery = discover_series_dirs_status(target.input_root)
-            except Exception:
+            except Exception as exc:
                 logger.exception(
                     "worker: discover_target_failed watch_root_key=%s input_root=%s",
                     target.key,
                     target.input_root,
                 )
-                self._record_watch_root_unavailable(target.key, "discovery failed")
+                scan_errors[target.key] = _WatchRootScanError(
+                    message=f"{type(exc).__name__}: {exc}",
+                    transient=(
+                        isinstance(exc, OSError)
+                        and is_transient_filesystem_error(exc)
+                    ),
+                )
                 continue
             if discovery.unavailable:
-                self._record_watch_root_unavailable(target.key, discovery.error_message)
+                scan_errors[target.key] = _WatchRootScanError(
+                    message=discovery.error_message or "unavailable",
+                    transient=discovery.transient_error,
+                )
                 continue
-            self._record_watch_root_available(target.key)
             series_dirs = discovery.series_dirs
             for series_dir in series_dirs:
                 if self._store.find_active_job_by_series_dir(series_dir) is not None:
@@ -430,13 +561,19 @@ class AninamerWorker:
                             series_dir,
                             exc,
                         )
-                        self._record_watch_root_unavailable(target.key, str(exc))
+                        scan_errors[target.key] = _WatchRootScanError(
+                            message=f"{type(exc).__name__}: {exc}",
+                            transient=True,
+                        )
                         continue
                     logger.exception(
                         "worker: candidate_video_check_failed series_dir=%s",
                         series_dir,
                     )
-                    self._record_watch_root_unavailable(target.key, str(exc))
+                    scan_errors[target.key] = _WatchRootScanError(
+                        message=f"{type(exc).__name__}: {exc}",
+                        transient=False,
+                    )
                     continue
                 if not has_candidate_video:
                     diagnostics_logger.info(
@@ -465,6 +602,8 @@ class AninamerWorker:
                     created.series_dir,
                     created.output_root,
                 )
+        self._commit_watch_root_scan(scan_errors)
+        self._sync_storage_health_notification()
 
     def _clear_missing_failed_jobs(self) -> None:
         for job in self._store.list_jobs():
@@ -1722,7 +1861,25 @@ def _build_notification_presentation(
     title = f"Aninamer: {subject}"
     archive_directory: str | None = None
 
-    if event_kind == "job_apply_succeeded":
+    if event_kind == "worker_storage_unavailable":
+        keys = _notification_watch_root_keys(payload)
+        title = "Aninamer: 存储挂载不可用"
+        message = "所有监控目录连续两次无法访问，归档扫描已暂停"
+        if keys:
+            message = f"{message}（{', '.join(keys)}）"
+        severity = "warning"
+    elif event_kind == "worker_storage_recovered":
+        keys = _notification_watch_root_keys(payload)
+        title = "Aninamer: 存储挂载已恢复"
+        if keys:
+            message = (
+                "至少一个监控目录已恢复，归档扫描将继续"
+                f"（仍不可用：{', '.join(keys)}）"
+            )
+        else:
+            message = "所有监控目录均已恢复，归档扫描将继续"
+        severity = "success"
+    elif event_kind == "job_apply_succeeded":
         finalize_status = payload.get("finalize_status")
         message = _archive_summary_from_plan(plan)
         archive_directory = _archive_directory_from_plan(plan)
@@ -1766,6 +1923,18 @@ def _build_notification_presentation(
             archive_directory=archive_directory,
         ),
     )
+
+
+def _notification_watch_root_keys(payload: dict[str, object]) -> tuple[str, ...]:
+    raw_keys = payload.get("unavailable_watch_root_keys")
+    if not isinstance(raw_keys, list):
+        return ()
+    keys = {
+        item.strip()
+        for item in raw_keys
+        if isinstance(item, str) and item.strip()
+    }
+    return tuple(sorted(keys))
 
 
 def _notification_subject(job: JobRecord | None, plan: RenamePlan | None = None) -> str:

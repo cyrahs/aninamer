@@ -1045,6 +1045,49 @@ def test_runtime_store_notification_round_trip(
     assert second.delivery_status == "disabled"
 
 
+def test_runtime_store_releases_notification_dedupe_key_for_next_outage(
+    runtime_store: RuntimeStore,
+) -> None:
+    dedupe_key = "worker_storage_unavailable:active"
+    first = runtime_store.create_notification(
+        event_kind="worker_storage_unavailable",
+        severity="warning",
+        title="存储不可用",
+        message="监控目录不可用",
+        markdown="# 存储不可用",
+        dedupe_key=dedupe_key,
+    )
+
+    assert runtime_store.get_notification_by_dedupe_key(dedupe_key) == first
+    suppressed = runtime_store.suppress_notification_delivery(
+        first.id,
+        reason="storage recovered before delivery",
+    )
+    assert suppressed is not None
+    assert suppressed.delivery_status == "disabled"
+    assert suppressed.next_attempt_at is None
+    assert suppressed.last_error == "storage recovered before delivery"
+    assert runtime_store.release_notification_dedupe_key(
+        first.id,
+        dedupe_key=dedupe_key,
+    )
+    assert runtime_store.get_notification_by_dedupe_key(dedupe_key) is None
+    assert not runtime_store.release_notification_dedupe_key(
+        first.id,
+        dedupe_key=dedupe_key,
+    )
+
+    second = runtime_store.create_notification(
+        event_kind="worker_storage_unavailable",
+        severity="warning",
+        title="存储不可用",
+        message="监控目录再次不可用",
+        markdown="# 存储再次不可用",
+        dedupe_key=dedupe_key,
+    )
+    assert second.id != first.id
+
+
 def test_runtime_store_notification_delivery_transitions(
     runtime_store: RuntimeStore,
     tmp_path: Path,

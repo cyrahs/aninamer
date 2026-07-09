@@ -33,6 +33,12 @@ The worker owns directory discovery and processing. Frontends do not submit arbi
 Public endpoint:
 
 - `GET /healthz`
+- `GET /livez`
+
+`GET /livez` is independent from scan staleness. It returns `503` only when the
+worker is not running or every configured watch root has reported a transient
+filesystem failure for two consecutive discovery scans. Storage outage and
+recovery transitions are sent through the configured notification webhook.
 
 Protected endpoints:
 

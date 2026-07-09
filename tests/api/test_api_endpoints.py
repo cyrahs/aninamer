@@ -213,7 +213,10 @@ def _snapshot_source_file(
     }
 
 
-def test_api_requires_bearer_token_except_healthz(app_config, runtime_store: RuntimeStore) -> None:
+def test_api_requires_bearer_token_except_public_health_endpoints(
+    app_config,
+    runtime_store: RuntimeStore,
+) -> None:
     worker = AninamerWorker(app_config, runtime_store)
     app = create_app(app_config, store=runtime_store, worker=worker)
 
@@ -221,6 +224,10 @@ def test_api_requires_bearer_token_except_healthz(app_config, runtime_store: Run
         health = client.get("/healthz")
         assert health.status_code == 503
         assert health.json()["status"] == "unhealthy"
+
+        liveness = client.get("/livez")
+        assert liveness.status_code == 503
+        assert liveness.json()["reason"] == "worker has not started"
 
         missing = client.get("/api/v1/jobs")
         assert missing.status_code == 401
@@ -306,6 +313,13 @@ def test_healthz_reports_ok_when_worker_thread_is_running(
             health = client.get("/healthz")
             assert health.status_code == 200
             assert health.json() == {"status": "ok"}
+            liveness = client.get("/livez")
+            assert liveness.status_code == 200
+            assert liveness.json() == {
+                "status": "ok",
+                "worker_running": True,
+                "unavailable_watch_root_count": 0,
+            }
     finally:
         shutdown.set()
         thread.join(timeout=2.0)
@@ -338,6 +352,9 @@ def test_healthz_reports_unhealthy_when_worker_scan_is_stale(
         assert payload["status"] == "unhealthy"
         assert payload["reason"] == "worker scan is stale"
         assert payload["worker"]["last_scan_at"] == old_timestamp
+        liveness = client.get("/livez")
+        assert liveness.status_code == 200
+        assert liveness.json()["status"] == "ok"
 
 
 def test_jobs_endpoint_hides_internal_artifacts_and_status_endpoint_aggregates(

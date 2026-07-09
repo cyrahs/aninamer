@@ -100,3 +100,102 @@ def test_worker_health_stays_healthy_when_at_least_one_watch_root_is_available(
     health = worker.health_status()
     assert health.healthy is True
     assert health.unavailable_watch_root_keys == ("root-0",)
+
+
+def test_worker_liveness_confirms_storage_outage_after_two_scans(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path, root_count=2)
+    worker = AninamerWorker(  # type: ignore[arg-type]
+        config,
+        FakeStore(last_scan_at="2026-04-13T07:40:01+00:00"),
+    )
+    worker._mark_worker_started()
+
+    def unavailable(_input_root: Path) -> SeriesDiscoveryResult:
+        return SeriesDiscoveryResult(
+            series_dirs=[],
+            unavailable=True,
+            error_message="OSError: [Errno 116] Stale file handle",
+            transient_error=True,
+        )
+
+    monkeypatch.setattr("aninamer.worker.discover_series_dirs_status", unavailable)
+
+    worker._discover_new_jobs()
+    first = worker.liveness_status()
+    assert first.live is True
+    assert first.unavailable_watch_root_keys == ("root-0", "root-1")
+
+    worker._discover_new_jobs()
+    confirmed = worker.liveness_status()
+    assert confirmed.live is False
+    assert confirmed.reason == "storage unavailable"
+    assert confirmed.running is True
+
+
+def test_worker_liveness_clears_when_any_watch_root_recovers(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path, root_count=2)
+    worker = AninamerWorker(  # type: ignore[arg-type]
+        config,
+        FakeStore(last_scan_at="2026-04-13T07:40:01+00:00"),
+    )
+    worker._mark_worker_started()
+    recovered = False
+
+    def discovery(input_root: Path) -> SeriesDiscoveryResult:
+        if recovered and input_root.name == "input-1":
+            return SeriesDiscoveryResult(series_dirs=[])
+        return SeriesDiscoveryResult(
+            series_dirs=[],
+            unavailable=True,
+            error_message="OSError: [Errno 116] Stale file handle",
+            transient_error=True,
+        )
+
+    monkeypatch.setattr("aninamer.worker.discover_series_dirs_status", discovery)
+    worker._discover_new_jobs()
+    worker._discover_new_jobs()
+    assert worker.liveness_status().live is False
+
+    recovered = True
+    worker._discover_new_jobs()
+
+    liveness = worker.liveness_status()
+    assert liveness.live is True
+    assert liveness.unavailable_watch_root_keys == ("root-0",)
+
+
+def test_worker_liveness_ignores_scan_staleness_and_non_transient_root_errors(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    worker = AninamerWorker(  # type: ignore[arg-type]
+        config,
+        FakeStore(last_scan_at="2026-04-13T07:40:01+00:00"),
+    )
+    worker._mark_worker_started()
+    worker._started_at = "2026-04-13T07:39:01+00:00"
+
+    assert worker.health_status().reason == "worker scan is stale"
+    assert worker.liveness_status().live is True
+
+    monkeypatch.setattr(
+        "aninamer.worker.discover_series_dirs_status",
+        lambda _input_root: SeriesDiscoveryResult(
+            series_dirs=[],
+            unavailable=True,
+            error_message="PermissionError: denied",
+            transient_error=False,
+        ),
+    )
+    worker._discover_new_jobs()
+    worker._discover_new_jobs()
+
+    assert worker.health_status().reason == "all watch roots are unavailable"
+    assert worker.liveness_status().live is True

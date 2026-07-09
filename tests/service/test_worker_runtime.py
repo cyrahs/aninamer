@@ -908,6 +908,169 @@ def test_worker_delivers_webhook_notifications_when_enabled(
     }
 
 
+def test_worker_storage_outage_notifies_once_and_recovers_across_cycles(
+    app_config_with_notifications,
+    runtime_store: RuntimeStore,
+    monkeypatch,
+) -> None:
+    transport = CaptureWebhookTransport()
+    unavailable = True
+
+    def discovery(_input_root: Path) -> SeriesDiscoveryResult:
+        if not unavailable:
+            return SeriesDiscoveryResult(series_dirs=[])
+        return SeriesDiscoveryResult(
+            series_dirs=[],
+            unavailable=True,
+            error_message="OSError: [Errno 116] Stale file handle",
+            transient_error=True,
+        )
+
+    monkeypatch.setattr("aninamer.worker.discover_series_dirs_status", discovery)
+    worker = AninamerWorker(
+        app_config_with_notifications,
+        runtime_store,
+        webhook_transport=transport,
+    )
+    worker._mark_worker_started()
+
+    worker.scan_once()
+    assert runtime_store.list_notifications_after(0) == []
+    assert worker.liveness_status().live is True
+
+    worker.scan_once()
+    worker.scan_once()
+
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == [
+        "worker_storage_unavailable"
+    ]
+    assert notifications[0].severity == "warning"
+    assert notifications[0].delivery_status == "delivered"
+    assert worker.liveness_status().live is False
+    assert transport.calls == 1
+
+    unavailable = False
+    worker.scan_once()
+
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == [
+        "worker_storage_unavailable",
+        "worker_storage_recovered",
+    ]
+    assert notifications[1].severity == "success"
+    assert notifications[1].delivery_status == "delivered"
+    assert worker.liveness_status().live is True
+    assert transport.calls == 2
+
+    unavailable = True
+    worker.scan_once()
+    worker.scan_once()
+
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == [
+        "worker_storage_unavailable",
+        "worker_storage_recovered",
+        "worker_storage_unavailable",
+    ]
+    assert transport.calls == 3
+    bodies = [json.loads(body.decode("utf-8")) for body in transport.bodies]
+    assert [body["pin"] for body in bodies] == [False, False, False]
+
+
+def test_worker_keeps_delivered_storage_outage_active_across_restart(
+    app_config_with_notifications,
+    runtime_store: RuntimeStore,
+    monkeypatch,
+) -> None:
+    transport = CaptureWebhookTransport()
+
+    monkeypatch.setattr(
+        "aninamer.worker.discover_series_dirs_status",
+        lambda _input_root: SeriesDiscoveryResult(
+            series_dirs=[],
+            unavailable=True,
+            error_message="OSError: [Errno 116] Stale file handle",
+            transient_error=True,
+        ),
+    )
+    first_worker = AninamerWorker(
+        app_config_with_notifications,
+        runtime_store,
+        webhook_transport=transport,
+    )
+    first_worker._mark_worker_started()
+    first_worker.scan_once()
+    first_worker.scan_once()
+
+    restarted_worker = AninamerWorker(
+        app_config_with_notifications,
+        runtime_store,
+        webhook_transport=transport,
+    )
+    restarted_worker._mark_worker_started()
+    restarted_worker.scan_once()
+    restarted_worker.scan_once()
+
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == [
+        "worker_storage_unavailable"
+    ]
+    assert notifications[0].delivery_status == "delivered"
+    assert restarted_worker.liveness_status().live is False
+    assert transport.calls == 1
+
+
+def test_worker_suppresses_undelivered_outage_when_storage_recovers(
+    app_config_with_notifications,
+    runtime_store: RuntimeStore,
+    monkeypatch,
+) -> None:
+    transport = CaptureWebhookTransport(
+        response=WebhookResponse(status=500, body=b"upstream error", headers={})
+    )
+    unavailable = True
+
+    def discovery(_input_root: Path) -> SeriesDiscoveryResult:
+        if not unavailable:
+            return SeriesDiscoveryResult(series_dirs=[])
+        return SeriesDiscoveryResult(
+            series_dirs=[],
+            unavailable=True,
+            error_message="OSError: [Errno 116] Stale file handle",
+            transient_error=True,
+        )
+
+    monkeypatch.setattr("aninamer.worker.discover_series_dirs_status", discovery)
+    worker = AninamerWorker(
+        app_config_with_notifications,
+        runtime_store,
+        webhook_transport=transport,
+    )
+    worker._mark_worker_started()
+    worker.scan_once()
+    worker.scan_once()
+
+    outage = runtime_store.list_notifications_after(0)[0]
+    assert outage.delivery_status == "retry"
+    assert transport.calls == 1
+
+    unavailable = False
+    transport.response = WebhookResponse(status=200, body=b"ok", headers={})
+    worker.scan_once()
+
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == [
+        "worker_storage_unavailable"
+    ]
+    assert notifications[0].delivery_status == "disabled"
+    assert notifications[0].next_attempt_at is None
+    assert "recovered before outage alert was delivered" in (
+        notifications[0].last_error or ""
+    )
+    assert transport.calls == 1
+
+
 def test_worker_does_not_pin_non_error_webhook_notifications(
     app_config_with_notifications,
     runtime_store: RuntimeStore,

@@ -126,6 +126,45 @@ def test_notification_subject_falls_back_without_job() -> None:
     assert _notification_subject(None) == "归档任务"
 
 
+def test_storage_unavailable_notification_is_a_non_pinned_warning() -> None:
+    presentation = _build_notification_presentation(
+        event_kind="worker_storage_unavailable",
+        job=None,
+        job_request=None,
+        payload={
+            "unavailable_watch_root_keys": ["hanime", "anime"],
+            "unavailable_watch_root_count": 2,
+            "watch_root_count": 2,
+        },
+    )
+
+    assert presentation.severity == "warning"
+    assert presentation.title == "Aninamer: 存储挂载不可用"
+    assert presentation.message == (
+        "所有监控目录连续两次无法访问，归档扫描已暂停（anime, hanime）"
+    )
+    assert presentation.markdown.splitlines() == [
+        "*Aninamer: 存储挂载不可用*",
+        "所有监控目录连续两次无法访问，归档扫描已暂停"
+        r"（anime, hanime）",
+    ]
+
+
+def test_storage_recovered_notification_reports_remaining_unavailable_root() -> None:
+    presentation = _build_notification_presentation(
+        event_kind="worker_storage_recovered",
+        job=None,
+        job_request=None,
+        payload={"unavailable_watch_root_keys": ["hanime"]},
+    )
+
+    assert presentation.severity == "success"
+    assert presentation.title == "Aninamer: 存储挂载已恢复"
+    assert presentation.message == (
+        "至少一个监控目录已恢复，归档扫描将继续（仍不可用：hanime）"
+    )
+
+
 @pytest.mark.parametrize(
     ("finalize_status", "expected_severity"),
     [
