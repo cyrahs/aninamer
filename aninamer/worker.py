@@ -1079,12 +1079,20 @@ class AninamerWorker:
         self,
         job: JobRecord,
         finalize_status: str,
-    ) -> None:
-        self._create_notification(
+    ) -> NotificationRecord:
+        return self._create_notification(
             event_kind="job_apply_succeeded",
             job_id=job.id,
             payload={"finalize_status": finalize_status},
+            dedupe_key=f"job_apply_succeeded:{job.id}",
         )
+
+    def notify_job_apply_succeeded(
+        self,
+        job: JobRecord,
+        finalize_status: str,
+    ) -> NotificationRecord:
+        return self._notify_job_apply_succeeded(job, finalize_status)
 
     def _notify_job_apply_failed(self, job: JobRecord) -> None:
         self._create_notification(
@@ -1127,6 +1135,7 @@ class AninamerWorker:
         job_id: int | None = None,
         job_request_id: int | None = None,
         payload: dict[str, object] | None = None,
+        dedupe_key: str | None = None,
     ) -> NotificationRecord:
         job: JobRecord | None = None
         if job_id is not None:
@@ -1171,6 +1180,7 @@ class AninamerWorker:
             delivery_status=(
                 "pending" if self._config.notifications is not None else "disabled"
             ),
+            dedupe_key=dedupe_key,
         )
 
     def _load_notification_plan(self, job: JobRecord | None) -> RenamePlan | None:

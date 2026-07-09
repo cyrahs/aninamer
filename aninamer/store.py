@@ -540,6 +540,7 @@ class RuntimeStore:
                         last_attempt_at TIMESTAMPTZ NULL,
                         delivered_at TIMESTAMPTZ NULL,
                         last_error TEXT NULL,
+                        dedupe_key TEXT NULL,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                     )
                     """
@@ -862,6 +863,12 @@ class RuntimeStore:
                 )
                 cur.execute(
                     """
+                    ALTER TABLE notifications
+                    ADD COLUMN IF NOT EXISTS dedupe_key TEXT NULL
+                    """
+                )
+                cur.execute(
+                    """
                     CREATE INDEX IF NOT EXISTS idx_jobs_updated_at
                     ON jobs (updated_at DESC, id DESC)
                     """
@@ -894,6 +901,13 @@ class RuntimeStore:
                     """
                     CREATE INDEX IF NOT EXISTS idx_notifications_delivery
                     ON notifications (delivery_status, next_attempt_at, id)
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_dedupe_key
+                    ON notifications (dedupe_key)
+                    WHERE dedupe_key IS NOT NULL
                     """
                 )
                 cur.execute(
@@ -1810,6 +1824,28 @@ class RuntimeStore:
                 row = cur.fetchone()
         if row is None:
             raise KeyError(operation_id)
+        return self._operation_from_row(row)
+
+    def update_operation_result_summary_if_finalize_absent(
+        self,
+        operation_id: int,
+        result_summary: dict[str, Any],
+    ) -> OperationRecord | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE operations
+                    SET result_summary = %s
+                    WHERE id = %s
+                      AND NOT (result_summary ? 'finalize')
+                    RETURNING *
+                    """,
+                    (Jsonb(result_summary), operation_id),
+                )
+                row = cur.fetchone()
+        if row is None:
+            return None
         return self._operation_from_row(row)
 
     def update_operation(
@@ -2800,6 +2836,7 @@ class RuntimeStore:
         disable_web_page_preview: bool = True,
         disable_notification: bool = False,
         delivery_status: NotificationDeliveryStatus = "pending",
+        dedupe_key: str | None = None,
     ) -> NotificationRecord:
         resolved_payload = payload or {}
         next_attempt_at = datetime.now(timezone.utc) if delivery_status == "pending" else None
@@ -2824,9 +2861,13 @@ class RuntimeStore:
                         next_attempt_at,
                         last_attempt_at,
                         delivered_at,
-                        last_error
+                        last_error,
+                        dedupe_key
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, NULL, NULL, NULL)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, %s, NULL, NULL, NULL, %s)
+                    ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL
+                    DO UPDATE
+                    SET dedupe_key = notifications.dedupe_key
                     RETURNING *
                     """,
                     (
@@ -2843,6 +2884,7 @@ class RuntimeStore:
                         disable_notification,
                         delivery_status,
                         next_attempt_at,
+                        dedupe_key,
                     ),
                 )
                 row = cur.fetchone()

@@ -4,12 +4,22 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 from pathlib import Path
 import re
 import secrets
 import shutil
 
-from aninamer.monitoring import MONITOR_EXCLUDED_DIR_NAMES, MONITOR_REVIEW_DIR
+from aninamer.apply import AppliedMove, ApplyResult
+from aninamer.artifacts import rename_result_to_payload
+from aninamer.monitoring import (
+    MONITOR_EXCLUDED_DIR_NAMES,
+    MONITOR_REVIEW_DIR,
+    MonitorFinalizeResult,
+    finalize_series_dir_after_apply,
+    snapshot_series_files,
+)
+from aninamer.pipeline import ApplyExecutionResult, PlanBuildResult
 from aninamer.store import (
     DestinationReservationConflictError,
     DestinationReservationSpec,
@@ -24,9 +34,9 @@ from aninamer.store import (
     RuntimeStore,
 )
 from aninamer.worker import AninamerWorker
-from aninamer.pipeline import PlanBuildResult
 from aninamer.plan import (
     PlannedMove,
+    RenamePlan,
     format_episode_base,
     format_season_folder,
     format_series_root_folder,
@@ -84,6 +94,7 @@ LEGACY_APPLY_DISABLED_MESSAGE = (
     "legacy apply is disabled until Operation/PathEvent/"
     "DestinationReservation safety chain is implemented"
 )
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -149,14 +160,14 @@ class ApiService:
             episode_targets = _build_episode_targets(moves)
             subtitle_links = _build_subtitle_links(moves, episode_targets)
         else:
-            episode_targets = [
-                ReviewEpisodeTarget.model_validate(item)
-                for item in snapshot.episode_targets
-            ]
-            subtitle_links = [
-                ReviewSubtitleLink.model_validate(item)
-                for item in snapshot.subtitle_links
-            ]
+            episode_targets = _snapshot_episode_targets_with_move_state(
+                snapshot.episode_targets,
+                moves,
+            )
+            subtitle_links = _snapshot_subtitle_links_with_move_state(
+                snapshot.subtitle_links,
+                moves,
+            )
         rollback_summary = self._last_rollback_check_summary_from_operations(
             operations
         )
@@ -167,6 +178,7 @@ class ApiService:
             source_files,
             snapshot=_snapshot_revision_payload(snapshot),
         )
+        finalize_summary = _review_finalize_summary(job, operations)
         if snapshot is None:
             selected_tmdb_info = TmdbReviewInfo(
                 selected_tmdb_id=job.tmdb_id,
@@ -218,10 +230,10 @@ class ApiService:
                 subtitle_links,
             ),
             readiness_acknowledgements=[],
-            finalize_status="archived" if job.archive_path else "none",
+            finalize_status=str(finalize_summary["status"]),
             archive_path_summary={
-                "present": job.archive_path is not None,
-                "path": job.archive_path,
+                "present": finalize_summary["archive_path"] is not None,
+                "path": finalize_summary["archive_path"],
             },
             review_exclusion_proof={"status": "unknown"},
             rollback_capability_hints=self._rollback_capability_hints(job, moves),
@@ -1191,6 +1203,12 @@ class ApiService:
                 )
             stored_payload = existing_operation.result_summary.get("response_payload")
             if isinstance(stored_payload, dict):
+                if existing_operation.status == "succeeded":
+                    self._finalize_replayed_successful_apply(
+                        job=job,
+                        operation=existing_operation,
+                        response_payload=stored_payload,
+                    )
                 return ApplyResponse.model_validate(stored_payload)
             if existing_operation.status in {"queued", "running"}:
                 raise ApiServiceError(
@@ -1272,6 +1290,7 @@ class ApiService:
                 details=final_validation.model_dump(mode="json"),
             )
 
+        before_files = snapshot_series_files(Path(job.series_dir))
         claim_token = secrets.token_urlsafe(16)
         operation = self.store.create_operation(
             job_id=job.id,
@@ -1290,6 +1309,12 @@ class ApiService:
         if operation.result_summary.get("claim_token") != claim_token:
             stored_payload = operation.result_summary.get("response_payload")
             if isinstance(stored_payload, dict):
+                if operation.status == "succeeded":
+                    self._finalize_replayed_successful_apply(
+                        job=job,
+                        operation=operation,
+                        response_payload=stored_payload,
+                    )
                 return ApplyResponse.model_validate(stored_payload)
             if operation.status in {"queued", "running"}:
                 raise ApiServiceError(
@@ -1319,6 +1344,14 @@ class ApiService:
                 moves=affected,
                 reservations=reservations,
                 validation_id=payload.validation_id,
+                source_before_files=before_files,
+            )
+            self._finalize_successful_apply(
+                job=job,
+                operation_id=operation.id,
+                moves=affected,
+                before_files=before_files,
+                response_payload=response_payload,
             )
         except DestinationReservationConflictError as exc:
             response_payload = _apply_failure_response_payload(
@@ -1395,6 +1428,340 @@ class ApiService:
             )
             raise
         return ApplyResponse.model_validate(response_payload)
+
+    def _finalize_replayed_successful_apply(
+        self,
+        *,
+        job: JobRecord,
+        operation: OperationRecord,
+        response_payload: dict[str, object],
+    ) -> None:
+        raw_before_files = operation.result_summary.get("source_before_files")
+        if not (
+            isinstance(raw_before_files, list)
+            and all(isinstance(item, str) for item in raw_before_files)
+        ):
+            logger.warning(
+                "api: apply_finalize_replay_missing_source_snapshot job_id=%s operation_id=%s",
+                job.id,
+                operation.id,
+            )
+            return
+        try:
+            moved_ids = _moved_item_ids_from_apply_response(response_payload)
+            moves = [
+                move
+                for move in self.store.list_job_moves(job.id)
+                if move.id in moved_ids
+            ]
+            self._finalize_successful_apply(
+                job=job,
+                operation_id=operation.id,
+                moves=moves,
+                before_files=set(raw_before_files),
+                response_payload=response_payload,
+                existing_result_summary=operation.result_summary,
+            )
+        except Exception as exc:
+            logger.warning(
+                "api: apply_finalize_replay_failed job_id=%s operation_id=%s error=%s",
+                job.id,
+                operation.id,
+                exc,
+            )
+
+    def _finalize_successful_apply(
+        self,
+        *,
+        job: JobRecord,
+        operation_id: int,
+        moves: list[JobMoveRecord],
+        before_files: set[str],
+        response_payload: dict[str, object],
+        existing_result_summary: dict[str, object] | None = None,
+    ) -> None:
+        try:
+            plan = _rename_plan_from_job_moves(job, moves)
+            execution = _apply_execution_result_from_response(
+                plan,
+                moves,
+                response_payload,
+            )
+        except Exception as exc:
+            logger.warning(
+                "api: apply_finalize_prepare_failed job_id=%s operation_id=%s error=%s",
+                job.id,
+                operation_id,
+                exc,
+            )
+            return
+
+        base_summary = (
+            dict(existing_result_summary)
+            if existing_result_summary is not None
+            else _apply_success_result_summary_from_response(
+                response_payload,
+                source_before_files=before_files,
+            )
+        )
+        side_effects = _apply_finalize_side_effects_from_summary(base_summary)
+        finalize_error: str | None = None
+        existing_finalize = _finalize_result_from_summary(base_summary)
+        if existing_finalize is not None:
+            finalize = existing_finalize
+        elif job.archive_path:
+            finalize = MonitorFinalizeResult(
+                status="archived",
+                archive_path=Path(job.archive_path),
+            )
+        else:
+            try:
+                finalize = finalize_series_dir_after_apply(
+                    Path(job.series_dir),
+                    plan,
+                    before_files=before_files,
+                )
+            except Exception as exc:
+                finalize_error = str(exc)
+                logger.warning(
+                    "api: apply_finalize_failed job_id=%s operation_id=%s error=%s",
+                    job.id,
+                    operation_id,
+                    exc,
+                )
+                finalize = MonitorFinalizeResult(status="skipped")
+
+        current_summary = self._current_operation_result_summary(
+            operation_id,
+            fallback=base_summary,
+        )
+        current_finalize = _finalize_result_from_summary(current_summary)
+        if current_finalize is not None:
+            finalize = current_finalize
+        side_effects = _merge_apply_finalize_side_effects(
+            _apply_finalize_side_effects_from_summary(current_summary),
+            side_effects,
+        )
+        if current_finalize is None:
+            claimed = self._claim_apply_finalize_summary(
+                job_id=job.id,
+                operation_id=operation_id,
+                current_summary=current_summary,
+                response_payload=response_payload,
+                before_files=before_files,
+                finalize=finalize,
+                finalize_error=finalize_error,
+                side_effects=side_effects,
+            )
+            if not claimed:
+                current_summary = self._current_operation_result_summary(
+                    operation_id,
+                    fallback=current_summary,
+                )
+                current_finalize = _finalize_result_from_summary(current_summary)
+                if current_finalize is None:
+                    return
+                finalize = current_finalize
+                side_effects = _merge_apply_finalize_side_effects(
+                    _apply_finalize_side_effects_from_summary(current_summary),
+                    side_effects,
+                )
+
+        if not side_effects["result_artifact_saved"]:
+            try:
+                self.store.save_artifact(
+                    job.id,
+                    "result",
+                    rename_result_to_payload(execution=execution, finalize=finalize),
+                )
+                side_effects["result_artifact_saved"] = True
+            except Exception as exc:
+                logger.warning(
+                    "api: apply_finalize_artifact_save_failed job_id=%s operation_id=%s error=%s",
+                    job.id,
+                    operation_id,
+                    exc,
+                )
+
+        updated_job = job
+        if not side_effects["job_updated"]:
+            try:
+                updated_job = self.store.update_job(
+                    job.id,
+                    archive_path=(
+                        str(finalize.archive_path)
+                        if finalize.archive_path is not None
+                        else None
+                    ),
+                    fail_path=None,
+                )
+                side_effects["job_updated"] = True
+            except Exception as exc:
+                logger.warning(
+                    "api: apply_finalize_job_update_failed job_id=%s operation_id=%s error=%s",
+                    job.id,
+                    operation_id,
+                    exc,
+                )
+
+        current_summary = self._current_operation_result_summary(
+            operation_id,
+            fallback=current_summary,
+        )
+        current_finalize = _finalize_result_from_summary(current_summary)
+        if current_finalize is not None:
+            finalize = current_finalize
+        side_effects = _merge_apply_finalize_side_effects(
+            _apply_finalize_side_effects_from_summary(current_summary),
+            side_effects,
+        )
+        if not self._save_apply_finalize_summary(
+            job_id=job.id,
+            operation_id=operation_id,
+            current_summary=current_summary,
+            response_payload=response_payload,
+            before_files=before_files,
+            finalize=finalize,
+            finalize_error=finalize_error,
+            side_effects=side_effects,
+        ):
+            return
+
+        if side_effects["success_notification_sent"]:
+            return
+        try:
+            self.worker.notify_job_apply_succeeded(updated_job, finalize.status)
+            side_effects["success_notification_sent"] = True
+        except Exception as exc:
+            logger.warning(
+                "api: apply_success_notification_failed job_id=%s operation_id=%s error=%s",
+                job.id,
+                operation_id,
+                exc,
+            )
+            return
+        current_summary = self._current_operation_result_summary(
+            operation_id,
+            fallback=current_summary,
+        )
+        current_finalize = _finalize_result_from_summary(current_summary)
+        if current_finalize is not None:
+            finalize = current_finalize
+        side_effects = _merge_apply_finalize_side_effects(
+            _apply_finalize_side_effects_from_summary(current_summary),
+            side_effects,
+        )
+        self._save_apply_finalize_summary(
+            job_id=job.id,
+            operation_id=operation_id,
+            current_summary=current_summary,
+            response_payload=response_payload,
+            before_files=before_files,
+            finalize=finalize,
+            finalize_error=finalize_error,
+            side_effects=side_effects,
+        )
+
+    def _current_operation_result_summary(
+        self,
+        operation_id: int,
+        *,
+        fallback: dict[str, object],
+    ) -> dict[str, object]:
+        try:
+            operation = self.store.update_operation(operation_id)
+        except Exception as exc:
+            logger.warning(
+                "api: apply_finalize_operation_refresh_failed operation_id=%s error=%s",
+                operation_id,
+                exc,
+            )
+            return dict(fallback)
+        return dict(operation.result_summary)
+
+    def _claim_apply_finalize_summary(
+        self,
+        *,
+        job_id: int,
+        operation_id: int,
+        current_summary: dict[str, object],
+        response_payload: dict[str, object],
+        before_files: set[str],
+        finalize: MonitorFinalizeResult,
+        finalize_error: str | None,
+        side_effects: dict[str, bool],
+    ) -> bool:
+        result_summary = _apply_result_summary_with_finalize(
+            _apply_success_result_summary_from_response(
+                response_payload,
+                source_before_files=before_files,
+                current_summary=current_summary,
+            ),
+            finalize=finalize,
+            finalize_error=finalize_error,
+            side_effects=side_effects,
+        )
+        try:
+            update_if_absent = (
+                self.store.update_operation_result_summary_if_finalize_absent
+            )
+        except AttributeError:
+            return self._save_apply_finalize_summary(
+                job_id=job_id,
+                operation_id=operation_id,
+                current_summary=current_summary,
+                response_payload=response_payload,
+                before_files=before_files,
+                finalize=finalize,
+                finalize_error=finalize_error,
+                side_effects=side_effects,
+            )
+        try:
+            return update_if_absent(operation_id, result_summary) is not None
+        except Exception as exc:
+            logger.warning(
+                "api: apply_finalize_claim_failed job_id=%s operation_id=%s error=%s",
+                job_id,
+                operation_id,
+                exc,
+            )
+            return False
+
+    def _save_apply_finalize_summary(
+        self,
+        *,
+        job_id: int,
+        operation_id: int,
+        current_summary: dict[str, object],
+        response_payload: dict[str, object],
+        before_files: set[str],
+        finalize: MonitorFinalizeResult,
+        finalize_error: str | None,
+        side_effects: dict[str, bool],
+    ) -> bool:
+        try:
+            self.store.update_operation_result_summary(
+                operation_id,
+                _apply_result_summary_with_finalize(
+                    _apply_success_result_summary_from_response(
+                        response_payload,
+                        source_before_files=before_files,
+                        current_summary=current_summary,
+                    ),
+                    finalize=finalize,
+                    finalize_error=finalize_error,
+                    side_effects=side_effects,
+                ),
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "api: apply_finalize_summary_update_failed job_id=%s operation_id=%s error=%s",
+                job_id,
+                operation_id,
+                exc,
+            )
+            return False
 
     def rollback_eligibility(
         self,
@@ -2077,12 +2444,9 @@ class ApiService:
         moves: list[JobMoveRecord],
         snapshot: ReviewSnapshotRecord | None = None,
     ) -> list[ReviewSourceFile]:
-        if snapshot is not None:
-            return [
-                ReviewSourceFile.model_validate(item)
-                for item in snapshot.source_files
-            ]
         items = _validation_source_files(job, moves, None)
+        if snapshot is not None:
+            items = _snapshot_source_files_with_move_state(job, moves, snapshot)
         items.sort(key=lambda item: (item.original_path.display_path, item.id))
         return items
 
@@ -2525,6 +2889,140 @@ def _snapshot_revision_payload(
         "path_event_summary": snapshot.path_event_summary,
         "validation_summary": snapshot.validation_summary,
     }
+
+
+def _review_finalize_summary(
+    job: JobRecord,
+    operations: list[OperationRecord],
+) -> dict[str, object]:
+    if job.archive_path:
+        return {"status": "archived", "archive_path": job.archive_path}
+    for operation in sorted(operations, key=lambda item: item.id, reverse=True):
+        if operation.operation_type != "apply":
+            continue
+        finalize = operation.result_summary.get("finalize")
+        if not isinstance(finalize, dict):
+            continue
+        status = finalize.get("status")
+        if not isinstance(status, str):
+            continue
+        archive_path = finalize.get("archive_path")
+        return {
+            "status": status,
+            "archive_path": archive_path if isinstance(archive_path, str) else None,
+        }
+    return {"status": "none", "archive_path": None}
+
+
+def _review_status_from_move_status(status: str) -> str:
+    if status == "moved":
+        return "applied"
+    return status
+
+
+def _combined_review_status(statuses: list[str]) -> str:
+    if not statuses:
+        return "proposed"
+    unique = set(statuses)
+    if unique == {"applied"}:
+        return "applied"
+    if "failed" in unique:
+        return "failed"
+    if len(unique) == 1:
+        return statuses[0]
+    return "mixed"
+
+
+def _snapshot_episode_targets_with_move_state(
+    raw_targets: list[dict[str, object]],
+    moves: list[JobMoveRecord],
+) -> list[ReviewEpisodeTarget]:
+    moves_by_id = {move.id: move for move in moves}
+    targets: list[ReviewEpisodeTarget] = []
+    for raw_target in raw_targets:
+        target = ReviewEpisodeTarget.model_validate(raw_target)
+        linked_moves = [
+            moves_by_id[move_id]
+            for move_id in target.move_item_ids
+            if move_id in moves_by_id
+        ]
+        if linked_moves:
+            target = target.model_copy(
+                update={
+                    "status": _combined_review_status(
+                        [
+                            _review_status_from_move_status(move.status)
+                            for move in linked_moves
+                        ]
+                    )
+                }
+            )
+        targets.append(target)
+    return targets
+
+
+def _snapshot_subtitle_links_with_move_state(
+    raw_links: list[dict[str, object]],
+    moves: list[JobMoveRecord],
+) -> list[ReviewSubtitleLink]:
+    moves_by_id = {move.id: move for move in moves}
+    links: list[ReviewSubtitleLink] = []
+    for raw_link in raw_links:
+        link = ReviewSubtitleLink.model_validate(raw_link)
+        if link.move_item_id is not None and link.move_item_id in moves_by_id:
+            link = link.model_copy(
+                update={
+                    "status": _review_status_from_move_status(
+                        moves_by_id[link.move_item_id].status
+                    )
+                }
+            )
+        links.append(link)
+    return links
+
+
+def _snapshot_source_files_with_move_state(
+    job: JobRecord,
+    moves: list[JobMoveRecord],
+    snapshot: ReviewSnapshotRecord,
+) -> list[ReviewSourceFile]:
+    moves_by_source = {(move.src_id, move.kind): move for move in moves}
+    items: list[ReviewSourceFile] = []
+    for raw_item in snapshot.source_files:
+        item = ReviewSourceFile.model_validate(raw_item)
+        move = moves_by_source.get((item.id, item.kind))
+        if move is None:
+            items.append(item)
+            continue
+        current_path = move.dst if move.status == "moved" else move.src
+        current_path_kind = "output" if move.status == "moved" else "source"
+        final_disposition = "planned_output"
+        if move.status == "moved":
+            final_disposition = "output"
+        elif move.status == "failed":
+            final_disposition = "failed"
+        elif move.status == "skipped":
+            final_disposition = "original"
+        elif move.status == "rolled_back":
+            final_disposition = "source"
+        items.append(
+            item.model_copy(
+                update={
+                    "current_path": _validation_path_ref(
+                        current_path,
+                        root_kind=current_path_kind,
+                        root=(
+                            Path(job.output_root)
+                            if current_path_kind == "output"
+                            else Path(job.series_dir)
+                        ),
+                    ),
+                    "current_path_kind": current_path_kind,
+                    "final_disposition": final_disposition,
+                }
+            )
+        )
+    return items
 
 
 def _assert_review_revision_current(
@@ -3974,10 +4472,7 @@ def _validation_source_files(
     snapshot: ReviewSnapshotRecord | None,
 ) -> list[ReviewSourceFile]:
     if snapshot is not None:
-        return [
-            ReviewSourceFile.model_validate(item)
-            for item in snapshot.source_files
-        ]
+        return _snapshot_source_files_with_move_state(job, moves, snapshot)
     items: list[ReviewSourceFile] = []
     for move in moves:
         if not (
@@ -4376,6 +4871,182 @@ def _apply_failure_response_payload(
             "code": error_code,
             "message": error_message,
         },
+    }
+
+
+def _rename_plan_from_job_moves(
+    job: JobRecord,
+    moves: list[JobMoveRecord],
+) -> RenamePlan:
+    if not moves:
+        raise ValueError("rename plan contains no moves")
+    if job.tmdb_id is None:
+        raise ValueError("job tmdb_id is required")
+    return RenamePlan(
+        tmdb_id=job.tmdb_id,
+        series_name_zh_cn=job.series_name,
+        year=None,
+        series_dir=Path(job.series_dir),
+        output_root=Path(job.output_root),
+        moves=tuple(
+            PlannedMove(
+                src=Path(move.src),
+                dst=Path(move.dst),
+                kind=move.kind,
+                src_id=move.src_id,
+            )
+            for move in moves
+        ),
+    )
+
+
+def _apply_execution_result_from_response(
+    plan: RenamePlan,
+    moves: list[JobMoveRecord],
+    response_payload: dict[str, object],
+) -> ApplyExecutionResult:
+    moved_ids = _moved_item_ids_from_apply_response(response_payload)
+    applied = tuple(
+        AppliedMove(
+            src=Path(move.src),
+            dst=Path(move.dst),
+            kind=move.kind,
+            src_id=move.src_id,
+        )
+        for move in moves
+        if move.id in moved_ids
+    )
+    rollback_plan = RenamePlan(
+        tmdb_id=plan.tmdb_id,
+        series_name_zh_cn=plan.series_name_zh_cn,
+        year=plan.year,
+        series_dir=plan.series_dir,
+        output_root=plan.output_root,
+        moves=tuple(
+            PlannedMove(
+                src=move.dst,
+                dst=move.src,
+                kind=move.kind,
+                src_id=move.src_id,
+            )
+            for move in plan.moves
+        ),
+    )
+    return ApplyExecutionResult(
+        apply_result=ApplyResult(
+            dry_run=False,
+            applied=applied,
+            rollback_moves=rollback_plan.moves,
+            temp_dir=None,
+        ),
+        rollback_plan=rollback_plan,
+        applied_count=len(applied),
+    )
+
+
+def _moved_item_ids_from_apply_response(
+    response_payload: dict[str, object],
+) -> set[int]:
+    return {
+        int(item["move_item_id"])
+        for item in response_payload.get("moved_items", [])
+        if isinstance(item, dict) and isinstance(item.get("move_item_id"), int)
+    }
+
+
+def _apply_result_summary_with_finalize(
+    result_summary: dict[str, object],
+    *,
+    finalize: MonitorFinalizeResult,
+    finalize_error: str | None,
+    side_effects: dict[str, bool],
+) -> dict[str, object]:
+    summary = dict(result_summary)
+    finalize_summary: dict[str, object] = {
+        "status": finalize.status,
+        "archive_path": (
+            str(finalize.archive_path) if finalize.archive_path is not None else None
+        ),
+    }
+    if finalize_error is not None:
+        finalize_summary["error"] = finalize_error
+    summary["finalize"] = finalize_summary
+    summary["finalize_side_effects"] = {
+        "result_artifact_saved": side_effects["result_artifact_saved"],
+        "job_updated": side_effects["job_updated"],
+        "success_notification_sent": side_effects["success_notification_sent"],
+    }
+    return summary
+
+
+def _apply_success_result_summary_from_response(
+    response_payload: dict[str, object],
+    *,
+    source_before_files: set[str] | None = None,
+    current_summary: dict[str, object] | None = None,
+) -> dict[str, object]:
+    summary = dict(current_summary) if current_summary is not None else {}
+    summary.update(
+        {
+            "status": "succeeded",
+            "validation_id": response_payload.get("validation_id"),
+            "applied_move_item_count": response_payload.get(
+                "applied_move_item_count",
+                0,
+            ),
+            "item_result_summary": response_payload.get("item_result_summary", {}),
+            "moved_items": response_payload.get("moved_items", []),
+            "response_payload": response_payload,
+        }
+    )
+    if source_before_files is not None:
+        summary["source_before_files"] = sorted(source_before_files)
+    return summary
+
+
+def _finalize_result_from_summary(
+    result_summary: dict[str, object],
+) -> MonitorFinalizeResult | None:
+    raw_finalize = result_summary.get("finalize")
+    if not isinstance(raw_finalize, dict):
+        return None
+    status = raw_finalize.get("status")
+    if status not in {"deleted", "archived", "skipped"}:
+        return None
+    archive_path = raw_finalize.get("archive_path")
+    return MonitorFinalizeResult(
+        status=status,  # type: ignore[arg-type]
+        archive_path=Path(archive_path) if isinstance(archive_path, str) else None,
+    )
+
+
+def _apply_finalize_side_effects_from_summary(
+    result_summary: dict[str, object],
+) -> dict[str, bool]:
+    raw_side_effects = result_summary.get("finalize_side_effects")
+    if not isinstance(raw_side_effects, dict):
+        raw_side_effects = {}
+    return {
+        "result_artifact_saved": raw_side_effects.get("result_artifact_saved") is True,
+        "job_updated": raw_side_effects.get("job_updated") is True,
+        "success_notification_sent": (
+            raw_side_effects.get("success_notification_sent") is True
+        ),
+    }
+
+
+def _merge_apply_finalize_side_effects(
+    first: dict[str, bool],
+    second: dict[str, bool],
+) -> dict[str, bool]:
+    return {
+        "result_artifact_saved": (
+            first["result_artifact_saved"] or second["result_artifact_saved"]
+        ),
+        "job_updated": first["job_updated"] or second["job_updated"],
+        "success_notification_sent": (
+            first["success_notification_sent"] or second["success_notification_sent"]
+        ),
     }
 
 
@@ -5060,6 +5731,7 @@ def _execute_apply_moves(
     moves: list[JobMoveRecord],
     reservations: list[object],
     validation_id: int,
+    source_before_files: set[str] | None = None,
 ) -> dict[str, object]:
     reservations_by_index = list(reservations)
     if len(reservations_by_index) != len(moves):
@@ -5222,16 +5894,10 @@ def _execute_apply_moves(
         store.complete_apply_operation_success(
             operation_id=operation.id,
             job_id=job.id,
-            result_summary={
-                "status": "succeeded",
-                "validation_id": validation_id,
-                "applied_move_item_count": response_payload[
-                    "applied_move_item_count"
-                ],
-                "item_result_summary": response_payload["item_result_summary"],
-                "moved_items": moved_items,
-                "response_payload": response_payload,
-            },
+            result_summary=_apply_success_result_summary_from_response(
+                response_payload,
+                source_before_files=source_before_files,
+            ),
         )
     except Exception as exc:
         if not claimed_move_ids:

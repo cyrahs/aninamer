@@ -1635,14 +1635,20 @@ def test_apply_endpoint_moves_validated_plan_and_records_item_results(
     runtime_store: RuntimeStore,
     tmp_path: Path,
 ) -> None:
-    worker = AninamerWorker(app_config, runtime_store)
+    worker = AninamerWorker(
+        app_config,
+        runtime_store,
+        tmdb_client_factory=lambda: FakeRematchTMDBClient(),
+    )
     series_dir = tmp_path / "input" / "ShowA"
     output_root = tmp_path / "output"
     source = series_dir / "ep1.mkv"
+    ignored = series_dir / "notes.txt"
     destination = (
         output_root / "ShowA (2020) {tmdb-123}" / "S01" / "ShowA S01E01.mkv"
     )
     _write(source, b"video")
+    _write(ignored, b"notes")
     job = runtime_store.create_job(
         series_name="ShowA",
         watch_root_key="downloads",
@@ -1726,6 +1732,10 @@ def test_apply_endpoint_moves_validated_plan_and_records_item_results(
             f"/api/v1/jobs/{job.id}/operations/{first.json()['operation_id']}/items",
             headers=_auth_headers(),
         )
+        final_review = client.get(
+            f"/api/v1/jobs/{job.id}/review",
+            headers=_auth_headers(),
+        )
 
     assert validation.status_code == 200
     assert validation.json()["status"] == "valid"
@@ -1742,6 +1752,11 @@ def test_apply_endpoint_moves_validated_plan_and_records_item_results(
     updated_job = runtime_store.get_job(job.id)
     assert updated_job is not None
     assert updated_job.status == "succeeded"
+    assert updated_job.archive_path is not None
+    archive_path = Path(updated_job.archive_path)
+    assert archive_path.parent.name == "archive"
+    assert (archive_path / "notes.txt").read_bytes() == b"notes"
+    assert not series_dir.exists()
     moved = runtime_store.list_job_moves(job.id)
     assert moved[0].status == "moved"
     assert moved[0].applied_at is not None
@@ -1750,6 +1765,19 @@ def test_apply_endpoint_moves_validated_plan_and_records_item_results(
     assert items_payload["items"][0]["status"] == "succeeded"
     assert items_payload["items"][0]["path_event_id"] is not None
     assert items_payload["items"][0]["reservation_id"] is not None
+    result_artifact = runtime_store.load_artifact(job.id, "result")
+    assert result_artifact is not None
+    assert result_artifact["finalize"]["status"] == "archived"
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == ["job_apply_succeeded"]
+    assert notifications[0].delivery_status == "disabled"
+    assert final_review.status_code == 200
+    review_payload = final_review.json()
+    assert review_payload["finalize_status"] == "archived"
+    assert review_payload["archive_path_summary"]["present"] is True
+    assert review_payload["episode_targets"][0]["status"] == "applied"
+    assert review_payload["source_files"][0]["current_path_kind"] == "output"
+    assert review_payload["source_files"][0]["final_disposition"] == "output"
 
 
 def test_reopen_from_review_endpoint_reopens_withdrawn_items_and_is_idempotent(

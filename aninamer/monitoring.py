@@ -233,6 +233,39 @@ def snapshot_series_files(series_dir: Path) -> set[str]:
     return files
 
 
+def series_dir_contains_env_entry(series_dir: Path) -> bool:
+    try:
+        if not series_dir.exists() or not series_dir.is_dir():
+            return False
+    except OSError as exc:
+        logger.warning(
+            "monitor: env_entry_check_unavailable series_dir=%s error=%s",
+            series_dir,
+            exc,
+        )
+        raise
+
+    try:
+        walker = os.walk(
+            series_dir,
+            followlinks=False,
+            onerror=_raise_walk_error,
+        )
+        for _root, dirs, names in walker:
+            if any(is_env_file_name(name) for name in dirs):
+                return True
+            if any(is_env_file_name(name) for name in names):
+                return True
+    except OSError as exc:
+        logger.warning(
+            "monitor: env_entry_check_unavailable series_dir=%s error=%s",
+            series_dir,
+            exc,
+        )
+        raise
+    return False
+
+
 def is_transient_filesystem_error(exc: OSError) -> bool:
     return exc.errno in TRANSIENT_FILESYSTEM_ERRNOS
 
@@ -300,6 +333,36 @@ def archive_series_dir(series_dir: Path) -> Path:
     return move_series_dir_to_monitor_bucket(series_dir, MONITOR_ARCHIVE_DIR)
 
 
+def archive_series_dir_files(series_dir: Path, rel_paths: set[str]) -> Path:
+    bucket_root = series_dir.parent / MONITOR_ARCHIVE_DIR
+    bucket_root.mkdir(parents=True, exist_ok=True)
+    archive_path = next_monitor_bucket_path(bucket_root, series_dir.name)
+    archive_path.mkdir(parents=True, exist_ok=False)
+
+    resolved_series = series_dir.resolve(strict=False)
+    resolved_archive = archive_path.resolve(strict=False)
+    for rel in sorted(rel_paths):
+        rel_path = Path(rel)
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            raise ValueError(f"unsafe archive relative path: {rel}")
+        if any(is_env_file_name(part) for part in rel_path.parts):
+            raise ValueError(f"refusing to archive env path: {rel}")
+        source_path = series_dir / rel_path
+        destination_path = archive_path / rel_path
+        try:
+            source_path.resolve(strict=False).relative_to(resolved_series)
+            destination_path.resolve(strict=False).relative_to(resolved_archive)
+        except ValueError as exc:
+            raise ValueError(f"unsafe archive path: {rel}") from exc
+        if not source_path.exists():
+            continue
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.rename(destination_path)
+
+    prune_empty_tree(series_dir)
+    return archive_path
+
+
 def move_series_dir_to_fail(series_dir: Path) -> Path:
     return move_series_dir_to_monitor_bucket(series_dir, MONITOR_FAIL_DIR)
 
@@ -321,11 +384,31 @@ def finalize_series_dir_after_apply(
         )
         return MonitorFinalizeResult(status="skipped")
 
-    if prune_empty_tree(series_dir):
+    if not series_dir.exists():
         logger.info("monitor: source_deleted series_dir=%s", series_dir)
         return MonitorFinalizeResult(status="deleted")
 
-    archive_path = archive_series_dir(series_dir)
+    if series_dir_contains_env_entry(series_dir):
+        logger.info("monitor: source_contains_env_skip_finalize series_dir=%s", series_dir)
+        return MonitorFinalizeResult(status="skipped")
+
+    checked_files = snapshot_series_files(series_dir)
+    if checked_files != expected_after:
+        logger.info(
+            "monitor: source_changed_before_archive_skip_finalize series_dir=%s expected_remaining=%s actual_remaining=%s",
+            series_dir,
+            len(expected_after),
+            len(checked_files),
+        )
+        return MonitorFinalizeResult(status="skipped")
+    if series_dir_contains_env_entry(series_dir):
+        logger.info(
+            "monitor: source_contains_env_before_archive_skip_finalize series_dir=%s",
+            series_dir,
+        )
+        return MonitorFinalizeResult(status="skipped")
+
+    archive_path = archive_series_dir_files(series_dir, expected_after)
     logger.info(
         "monitor: source_archived series_dir=%s archive_path=%s",
         series_dir,

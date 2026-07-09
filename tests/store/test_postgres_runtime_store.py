@@ -67,6 +67,35 @@ def test_runtime_store_artifact_round_trip(runtime_store: RuntimeStore, tmp_path
     }
 
 
+def test_runtime_store_notification_dedupe_key_is_idempotent(
+    runtime_store: RuntimeStore,
+) -> None:
+    first = runtime_store.create_notification(
+        event_kind="job_apply_succeeded",
+        severity="success",
+        title="处理完成",
+        message="ShowA 已处理完成",
+        markdown="# 处理完成",
+        payload={"finalize_status": "archived"},
+        dedupe_key="job_apply_succeeded:1",
+        delivery_status="disabled",
+    )
+    second = runtime_store.create_notification(
+        event_kind="job_apply_succeeded",
+        severity="success",
+        title="处理完成",
+        message="ShowA 已处理完成",
+        markdown="# 处理完成",
+        payload={"finalize_status": "archived"},
+        dedupe_key="job_apply_succeeded:1",
+        delivery_status="disabled",
+    )
+
+    notifications = runtime_store.list_notifications_after(0)
+    assert first.id == second.id
+    assert [item.id for item in notifications] == [first.id]
+
+
 def test_runtime_store_preserves_legacy_plan_and_rollback_artifacts(
     runtime_store: RuntimeStore,
     tmp_path: Path,

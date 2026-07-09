@@ -46,6 +46,7 @@ from aninamer.api.service import (
     _validation_source_files,
     _withdraw_destination_reservation_spec,
 )
+from aninamer.monitoring import snapshot_series_files
 from aninamer.store import (
     DestinationReservationConflictError,
     IdempotencyConflictError,
@@ -1056,7 +1057,7 @@ def _apply_context(tmp_path):  # noqa: ANN001, ANN202
     source.parent.mkdir(parents=True)
     output_root.mkdir()
     source.write_bytes(b"video")
-    job = _job(str(output_root))
+    job = replace(_job(str(output_root)), series_dir=str(series_dir))
     move = _move(10, 1, "video", str(source), str(destination))
     source_files = _validation_source_files(job, [move], None)
     before_validation_versions = _job_versions(
@@ -1384,6 +1385,8 @@ def test_apply_job_moves_files_and_records_operation_lifecycle(tmp_path) -> None
             self.path_events: list[dict[str, object]] = []
             self.item_results: list[dict[str, object]] = []
             self.reservation_state: str | None = None
+            self.artifact_payload: dict[str, object] | None = None
+            self.operation_result_summary: dict[str, object] | None = None
 
         def get_job(self, job_id):  # noqa: ANN001, ANN201
             assert job_id == self.job.id
@@ -1551,8 +1554,8 @@ def test_apply_job_moves_files_and_records_operation_lifecycle(tmp_path) -> None
                 error_message=changes.get("error_message", self.job.error_message),  # type: ignore[arg-type]
                 series_dir=self.job.series_dir,
                 output_root=self.job.output_root,
-                archive_path=self.job.archive_path,
-                fail_path=self.job.fail_path,
+                archive_path=changes.get("archive_path", self.job.archive_path),  # type: ignore[arg-type]
+                fail_path=changes.get("fail_path", self.job.fail_path),  # type: ignore[arg-type]
             )
             return self.job
 
@@ -1562,21 +1565,60 @@ def test_apply_job_moves_files_and_records_operation_lifecycle(tmp_path) -> None
                 id=apply_operation.id,
                 job_id=apply_operation.job_id,
                 operation_type=apply_operation.operation_type,
-                status=changes["status"],  # type: ignore[arg-type]
+                status=changes.get("status", apply_operation.status),  # type: ignore[arg-type]
                 idempotency_key=apply_operation.idempotency_key,
                 request_payload_hash=apply_operation.request_payload_hash,
                 base_versions=apply_operation.base_versions,
                 progress=apply_operation.progress,
-                result_summary=changes["result_summary"],  # type: ignore[arg-type]
+                result_summary=changes.get(
+                    "result_summary",
+                    self.operation_result_summary or {},
+                ),  # type: ignore[arg-type]
                 error=changes.get("error"),  # type: ignore[arg-type]
                 poll_after_ms=apply_operation.poll_after_ms,
                 created_at=apply_operation.created_at,
                 started_at=apply_operation.started_at,
-                finished_at=changes["finished_at"],  # type: ignore[arg-type]
+                finished_at=changes.get(
+                    "finished_at",
+                    "2026-07-06T00:00:03+00:00",
+                ),  # type: ignore[arg-type]
             )
 
+        def update_operation_result_summary(self, operation_id, result_summary):  # noqa: ANN001, ANN201
+            assert operation_id == apply_operation.id
+            self.operation_result_summary = result_summary
+            return OperationRecord(
+                id=apply_operation.id,
+                job_id=apply_operation.job_id,
+                operation_type=apply_operation.operation_type,
+                status="succeeded",
+                idempotency_key=apply_operation.idempotency_key,
+                request_payload_hash=apply_operation.request_payload_hash,
+                base_versions=apply_operation.base_versions,
+                progress=apply_operation.progress,
+                result_summary=result_summary,
+                error=None,
+                poll_after_ms=apply_operation.poll_after_ms,
+                created_at=apply_operation.created_at,
+                started_at=apply_operation.started_at,
+                finished_at="2026-07-06T00:00:03+00:00",
+            )
+
+        def save_artifact(self, job_id, artifact_kind, payload):  # noqa: ANN001, ANN201
+            assert job_id == self.job.id
+            assert artifact_kind == "result"
+            self.artifact_payload = payload
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.notifications: list[tuple[int, str]] = []
+
+        def notify_job_apply_succeeded(self, job, finalize_status):  # noqa: ANN001, ANN201
+            self.notifications.append((job.id, finalize_status))
+
     store = FakeStore()
-    response = ApiService(store=store, worker=object()).apply_job(  # type: ignore[arg-type]
+    worker = FakeWorker()
+    response = ApiService(store=store, worker=worker).apply_job(  # type: ignore[arg-type]
         job.id,
         ApplyRequest(
             scope="all_validated",
@@ -1596,10 +1638,429 @@ def test_apply_job_moves_files_and_records_operation_lifecycle(tmp_path) -> None
     assert destination.read_bytes() == b"video"
     assert store.move.status == "moved"
     assert store.job.status == "succeeded"
+    assert store.job.archive_path is not None
+    assert Path(store.job.archive_path).parent.name == "archive"
     assert store.reservation_state == "committed"
+    assert store.artifact_payload is not None
+    assert store.artifact_payload["finalize"]["status"] == "archived"  # type: ignore[index]
+    assert store.operation_result_summary is not None
+    assert store.operation_result_summary["finalize"]["status"] == "archived"  # type: ignore[index]
+    assert store.operation_result_summary["source_before_files"] == ["ep1.mkv"]
+    assert worker.notifications == [(job.id, "archived")]
     assert store.path_events[0]["result"] == "succeeded"
     assert store.item_results[0]["status"] == "succeeded"
     assert store.item_results[0]["path_event_id"] == 701
+
+
+def test_apply_job_replay_finalizes_missing_success_side_effects(tmp_path) -> None:  # noqa: ANN001
+    context = _apply_context(tmp_path)
+    before_files = snapshot_series_files(Path(context.job.series_dir))
+    context.destination.parent.mkdir(parents=True)
+    context.source.unlink()
+    context.destination.write_bytes(b"video")
+    moved_move = replace(
+        context.move,
+        status="moved",
+        applied_at="2026-07-06T00:00:03+00:00",
+    )
+    payload = ApplyRequest(
+        scope="all_validated",
+        validation_id=context.validation_operation.id,
+        base_mapping_version=context.current_versions["mapping_version"],
+        base_move_plan_version=context.current_versions["move_plan_version"],
+        base_move_state_revision=context.current_versions["move_state_revision"],
+        base_review_revision=context.current_versions["review_revision"],
+    )
+    response_payload = {
+        "operation_id": 200,
+        "status": "succeeded",
+        "validation_id": context.validation_operation.id,
+        "applied_move_item_count": 1,
+        "item_result_summary": {"succeeded": 1, "failed": 0, "total": 1},
+        "moved_items": [{"move_item_id": context.move.id}],
+    }
+    existing = OperationRecord(
+        id=200,
+        job_id=context.job.id,
+        operation_type="apply",
+        status="succeeded",
+        idempotency_key="apply-replay-finalize",
+        request_payload_hash=_payload_hash(payload.model_dump(mode="json")),
+        base_versions={},
+        progress={},
+        result_summary={
+            "response_payload": response_payload,
+            "source_before_files": sorted(before_files),
+        },
+        error=None,
+        poll_after_ms=1000,
+        created_at="2026-07-06T00:00:00+00:00",
+        started_at=None,
+        finished_at="2026-07-06T00:00:01+00:00",
+    )
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.job = context.job
+            self.artifact_payload: dict[str, object] | None = None
+            self.operation_result_summary: dict[str, object] | None = None
+
+        def get_job(self, job_id):  # noqa: ANN001, ANN201
+            assert job_id == self.job.id
+            return self.job
+
+        def get_operation_by_idempotency(self, **_kwargs):  # noqa: ANN003, ANN201
+            return existing
+
+        def list_job_moves(self, job_id):  # noqa: ANN001, ANN201
+            assert job_id == self.job.id
+            return [moved_move]
+
+        def save_artifact(self, job_id, artifact_kind, payload):  # noqa: ANN001, ANN201
+            assert job_id == self.job.id
+            assert artifact_kind == "result"
+            self.artifact_payload = payload
+
+        def update_job(self, job_id, **changes):  # noqa: ANN001, ANN003, ANN201
+            assert job_id == self.job.id
+            self.job = replace(
+                self.job,
+                archive_path=changes.get("archive_path", self.job.archive_path),
+                fail_path=changes.get("fail_path", self.job.fail_path),
+            )
+            return self.job
+
+        def update_operation_result_summary(self, operation_id, result_summary):  # noqa: ANN001, ANN201
+            assert operation_id == existing.id
+            self.operation_result_summary = result_summary
+            return replace(existing, result_summary=result_summary)
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.notifications: list[tuple[int, str]] = []
+
+        def notify_job_apply_succeeded(self, job, finalize_status):  # noqa: ANN001, ANN201
+            self.notifications.append((job.id, finalize_status))
+
+    store = FakeStore()
+    worker = FakeWorker()
+
+    response = ApiService(store=store, worker=worker).apply_job(  # type: ignore[arg-type]
+        context.job.id,
+        payload,
+        idempotency_key="apply-replay-finalize",
+    )
+
+    assert response is not None
+    assert response.operation_id == existing.id
+    assert store.job.archive_path is not None
+    assert Path(store.job.archive_path).parent.name == "archive"
+    assert not Path(context.job.series_dir).exists()
+    assert store.artifact_payload is not None
+    assert store.artifact_payload["finalize"]["status"] == "archived"  # type: ignore[index]
+    assert store.operation_result_summary is not None
+    assert store.operation_result_summary["finalize"]["status"] == "archived"  # type: ignore[index]
+    assert store.operation_result_summary["finalize_side_effects"] == {
+        "result_artifact_saved": True,
+        "job_updated": True,
+        "success_notification_sent": True,
+    }
+    assert worker.notifications == [(context.job.id, "archived")]
+
+
+def test_apply_job_replay_repairs_missing_side_effects_after_finalize_summary(
+    tmp_path,
+) -> None:
+    context = _apply_context(tmp_path)
+    before_files = snapshot_series_files(Path(context.job.series_dir))
+    archive_path = tmp_path / "input" / "archive" / "ShowA"
+    context.destination.parent.mkdir(parents=True)
+    context.source.unlink()
+    context.destination.write_bytes(b"video")
+    moved_move = replace(
+        context.move,
+        status="moved",
+        applied_at="2026-07-06T00:00:03+00:00",
+    )
+    payload = ApplyRequest(
+        scope="all_validated",
+        validation_id=context.validation_operation.id,
+        base_mapping_version=context.current_versions["mapping_version"],
+        base_move_plan_version=context.current_versions["move_plan_version"],
+        base_move_state_revision=context.current_versions["move_state_revision"],
+        base_review_revision=context.current_versions["review_revision"],
+    )
+    response_payload = {
+        "operation_id": 200,
+        "status": "succeeded",
+        "validation_id": context.validation_operation.id,
+        "applied_move_item_count": 1,
+        "item_result_summary": {"succeeded": 1, "failed": 0, "total": 1},
+        "moved_items": [{"move_item_id": context.move.id}],
+    }
+    existing = OperationRecord(
+        id=200,
+        job_id=context.job.id,
+        operation_type="apply",
+        status="succeeded",
+        idempotency_key="apply-replay-finalize-side-effects",
+        request_payload_hash=_payload_hash(payload.model_dump(mode="json")),
+        base_versions={},
+        progress={},
+        result_summary={
+            "response_payload": response_payload,
+            "source_before_files": sorted(before_files),
+            "finalize": {
+                "status": "archived",
+                "archive_path": str(archive_path),
+            },
+        },
+        error=None,
+        poll_after_ms=1000,
+        created_at="2026-07-06T00:00:00+00:00",
+        started_at=None,
+        finished_at="2026-07-06T00:00:01+00:00",
+    )
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.job = context.job
+            self.artifact_payload: dict[str, object] | None = None
+            self.operation_result_summary = dict(existing.result_summary)
+
+        def get_job(self, job_id):  # noqa: ANN001, ANN201
+            assert job_id == self.job.id
+            return self.job
+
+        def get_operation_by_idempotency(self, **_kwargs):  # noqa: ANN003, ANN201
+            return existing
+
+        def list_job_moves(self, job_id):  # noqa: ANN001, ANN201
+            assert job_id == self.job.id
+            return [moved_move]
+
+        def save_artifact(self, job_id, artifact_kind, payload):  # noqa: ANN001, ANN201
+            assert job_id == self.job.id
+            assert artifact_kind == "result"
+            self.artifact_payload = payload
+
+        def update_job(self, job_id, **changes):  # noqa: ANN001, ANN003, ANN201
+            assert job_id == self.job.id
+            self.job = replace(
+                self.job,
+                archive_path=changes.get("archive_path", self.job.archive_path),
+                fail_path=changes.get("fail_path", self.job.fail_path),
+            )
+            return self.job
+
+        def update_operation(self, operation_id, **_changes):  # noqa: ANN001, ANN003, ANN201
+            assert operation_id == existing.id
+            return replace(existing, result_summary=self.operation_result_summary)
+
+        def update_operation_result_summary(self, operation_id, result_summary):  # noqa: ANN001, ANN201
+            assert operation_id == existing.id
+            self.operation_result_summary = result_summary
+            return replace(existing, result_summary=result_summary)
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.notifications: list[tuple[int, str]] = []
+
+        def notify_job_apply_succeeded(self, job, finalize_status):  # noqa: ANN001, ANN201
+            self.notifications.append((job.id, finalize_status))
+
+    store = FakeStore()
+    worker = FakeWorker()
+
+    response = ApiService(store=store, worker=worker).apply_job(  # type: ignore[arg-type]
+        context.job.id,
+        payload,
+        idempotency_key="apply-replay-finalize-side-effects",
+    )
+
+    assert response is not None
+    assert response.operation_id == existing.id
+    assert store.job.archive_path == str(archive_path)
+    assert store.artifact_payload is not None
+    assert store.artifact_payload["finalize"]["status"] == "archived"  # type: ignore[index]
+    assert store.operation_result_summary["finalize"] == {
+        "status": "archived",
+        "archive_path": str(archive_path),
+    }
+    assert store.operation_result_summary["finalize_side_effects"] == {
+        "result_artifact_saved": True,
+        "job_updated": True,
+        "success_notification_sent": True,
+    }
+    assert worker.notifications == [(context.job.id, "archived")]
+
+
+def test_apply_finalize_preserves_concurrent_finalize_claim(tmp_path) -> None:  # noqa: ANN001
+    context = _apply_context(tmp_path)
+    before_files = snapshot_series_files(Path(context.job.series_dir))
+    context.destination.parent.mkdir(parents=True)
+    context.source.unlink()
+    context.destination.write_bytes(b"video")
+    response_payload = {
+        "operation_id": 200,
+        "status": "succeeded",
+        "validation_id": context.validation_operation.id,
+        "applied_move_item_count": 1,
+        "item_result_summary": {"succeeded": 1, "failed": 0, "total": 1},
+        "moved_items": [{"move_item_id": context.move.id}],
+    }
+    winner_archive = tmp_path / "input" / "archive" / "ShowA"
+    winner_summary = {
+        "response_payload": response_payload,
+        "source_before_files": sorted(before_files),
+        "finalize": {
+            "status": "archived",
+            "archive_path": str(winner_archive),
+        },
+    }
+    operation = OperationRecord(
+        id=200,
+        job_id=context.job.id,
+        operation_type="apply",
+        status="succeeded",
+        idempotency_key="apply-concurrent-finalize",
+        request_payload_hash="hash",
+        base_versions={},
+        progress={},
+        result_summary={
+            "response_payload": response_payload,
+            "source_before_files": sorted(before_files),
+        },
+        error=None,
+        poll_after_ms=1000,
+        created_at="2026-07-06T00:00:00+00:00",
+        started_at=None,
+        finished_at="2026-07-06T00:00:01+00:00",
+    )
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.job = context.job
+            self.operation_result_summary = dict(operation.result_summary)
+            self.artifact_payload: dict[str, object] | None = None
+            self.claim_attempts = 0
+
+        def update_operation(self, operation_id, **_changes):  # noqa: ANN001, ANN003, ANN201
+            assert operation_id == operation.id
+            return replace(operation, result_summary=self.operation_result_summary)
+
+        def update_operation_result_summary_if_finalize_absent(self, operation_id, result_summary):  # noqa: ANN001, ANN201
+            assert operation_id == operation.id
+            assert result_summary["finalize"]["status"] == "archived"  # type: ignore[index]
+            self.claim_attempts += 1
+            self.operation_result_summary = dict(winner_summary)
+            return None
+
+        def save_artifact(self, job_id, artifact_kind, payload):  # noqa: ANN001, ANN201
+            assert job_id == self.job.id
+            assert artifact_kind == "result"
+            self.artifact_payload = payload
+
+        def update_job(self, job_id, **changes):  # noqa: ANN001, ANN003, ANN201
+            assert job_id == self.job.id
+            self.job = replace(
+                self.job,
+                archive_path=changes.get("archive_path", self.job.archive_path),
+                fail_path=changes.get("fail_path", self.job.fail_path),
+            )
+            return self.job
+
+        def update_operation_result_summary(self, operation_id, result_summary):  # noqa: ANN001, ANN201
+            assert operation_id == operation.id
+            self.operation_result_summary = result_summary
+            return replace(operation, result_summary=result_summary)
+
+    class FakeWorker:
+        def __init__(self) -> None:
+            self.notifications: list[tuple[int, str]] = []
+
+        def notify_job_apply_succeeded(self, job, finalize_status):  # noqa: ANN001, ANN201
+            self.notifications.append((job.id, finalize_status))
+
+    store = FakeStore()
+    worker = FakeWorker()
+
+    ApiService(store=store, worker=worker)._finalize_successful_apply(  # type: ignore[arg-type]
+        job=context.job,
+        operation_id=operation.id,
+        moves=[replace(context.move, status="moved")],
+        before_files=before_files,
+        response_payload=response_payload,
+        existing_result_summary=operation.result_summary,
+    )
+
+    assert store.claim_attempts == 1
+    assert store.operation_result_summary["finalize"] == winner_summary["finalize"]
+    assert store.operation_result_summary["finalize_side_effects"] == {
+        "result_artifact_saved": True,
+        "job_updated": True,
+        "success_notification_sent": True,
+    }
+    assert store.artifact_payload is not None
+    assert store.artifact_payload["finalize"] == winner_summary["finalize"]
+    assert store.job.archive_path == str(winner_archive)
+    assert worker.notifications == [(context.job.id, "archived")]
+
+
+def test_apply_finalize_side_effect_failures_do_not_raise(tmp_path) -> None:  # noqa: ANN001
+    context = _apply_context(tmp_path)
+    before_files = snapshot_series_files(Path(context.job.series_dir))
+    context.destination.parent.mkdir(parents=True)
+    context.source.unlink()
+    context.destination.write_bytes(b"video")
+    response_payload = {
+        "operation_id": 200,
+        "status": "succeeded",
+        "validation_id": context.validation_operation.id,
+        "applied_move_item_count": 1,
+        "item_result_summary": {"succeeded": 1, "failed": 0, "total": 1},
+        "moved_items": [{"move_item_id": context.move.id}],
+    }
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.operation_result_summary: dict[str, object] | None = None
+
+        def save_artifact(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN201
+            raise RuntimeError("artifact unavailable")
+
+        def update_job(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN201
+            raise RuntimeError("job update unavailable")
+
+        def update_operation_result_summary(self, operation_id, result_summary):  # noqa: ANN001, ANN201
+            assert operation_id == 200
+            self.operation_result_summary = result_summary
+            return SimpleNamespace(result_summary=result_summary)
+
+    class FailingWorker:
+        def notify_job_apply_succeeded(self, *_args, **_kwargs):  # noqa: ANN002, ANN003, ANN201
+            raise RuntimeError("notification unavailable")
+
+    store = FakeStore()
+    ApiService(store=store, worker=FailingWorker())._finalize_successful_apply(  # type: ignore[arg-type]
+        job=context.job,
+        operation_id=200,
+        moves=[context.move],
+        before_files=before_files,
+        response_payload=response_payload,
+    )
+
+    assert store.operation_result_summary is not None
+    assert store.operation_result_summary["finalize"]["status"] == "archived"  # type: ignore[index]
+    assert store.operation_result_summary["finalize_side_effects"] == {
+        "result_artifact_saved": False,
+        "job_updated": False,
+        "success_notification_sent": False,
+    }
+    archive_path = store.operation_result_summary["finalize"]["archive_path"]  # type: ignore[index]
+    assert isinstance(archive_path, str)
+    assert Path(archive_path).parent.name == "archive"
+    assert not Path(context.job.series_dir).exists()
 
 
 def test_execute_apply_moves_rejects_reservation_count_mismatch(tmp_path) -> None:  # noqa: ANN001
@@ -5263,6 +5724,8 @@ def test_frontend_keeps_current_detail_visible_during_same_job_refresh() -> None
     catch_else_end = catch_body.index("showNotice", catch_else_start)
     catch_keep_branch = catch_body[catch_keep_start:catch_else_start]
     catch_clear_branch = catch_body[catch_else_start:catch_else_end]
+    assert "state.safetyLoadingJobId === jobId" in catch_body
+    assert "state.safetyLoadingJobId = null" in catch_body
     assert "renderReview();" in catch_keep_branch
     assert "clearDetail();" not in catch_keep_branch
     assert "clearDetail();" in catch_clear_branch
@@ -5297,6 +5760,55 @@ def test_frontend_keeps_current_detail_visible_during_same_job_refresh() -> None
 
     clear_body = source[source.index("function clearDetail") :]
     assert "state.detailLoadingJobId = null" in clear_body
+
+
+def test_frontend_loads_safety_lazily_after_detail_render() -> None:
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    assert "safetyLoadingJobId: null" in source
+    assert "safetyError: null" in source
+
+    load_body = source[
+        source.index("async function loadJobDetail")
+        : source.index("async function loadJobSafety")
+    ]
+    assert "const [review, operations] = await Promise.all([" in load_body
+    assert "api(`/api/v1/jobs/${jobId}/review`)" in load_body
+    assert "api(`/api/v1/jobs/${jobId}/operations`)" in load_body
+    assert "/safety" not in load_body
+    assert "state.safety = null" in load_body
+    assert "state.safetyError = null" in load_body
+    assert "renderReview();" in load_body
+    assert "loadJobSafety(jobId, requestId);" in load_body
+
+    safety_body = source[
+        source.index("async function loadJobSafety")
+        : source.index("function renderReview")
+    ]
+    assert "state.safetyLoadingJobId = jobId" in safety_body
+    assert "api(`/api/v1/jobs/${jobId}/safety`)" in safety_body
+    assert "state.detailRequestId !== requestId" in safety_body
+    assert "state.selectedJobId !== jobId" in safety_body
+    assert "state.safety = safety" in safety_body
+    assert "state.safetyError = error.message" in safety_body
+    assert "state.safetyLoadingJobId = null" in safety_body
+
+    render_body = source[
+        source.index("function renderReview()")
+        : source.index("function isWriteBusy()")
+    ]
+    assert "const safetyLoading = state.safetyLoadingJobId === review.job.id" in render_body
+    assert "加载中" in render_body
+    assert "加载失败" in render_body
+
+    busy_body = source[
+        source.index("function isActionBusy()")
+        : source.index("function ensureDetailIdle")
+    ]
+    assert "safetyLoadingJobId" not in busy_body
+
+    clear_body = source[source.index("function clearDetail") :]
+    assert "state.safetyLoadingJobId = null" in clear_body
+    assert "state.safetyError = null" in clear_body
 
 
 def test_frontend_action_handlers_fail_closed_while_detail_loads() -> None:

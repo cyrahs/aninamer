@@ -3,11 +3,15 @@ from __future__ import annotations
 import errno
 from pathlib import Path
 
+import aninamer.monitoring as monitoring
 from aninamer.monitoring import (
     discover_series_dirs,
     discover_series_dirs_status,
+    finalize_series_dir_after_apply,
     series_dir_contains_candidate_video,
+    snapshot_series_files,
 )
+from aninamer.plan import PlannedMove, RenamePlan
 
 
 def test_discover_series_dirs_returns_empty_when_mount_is_unavailable(
@@ -95,3 +99,214 @@ def test_series_dir_contains_candidate_video_ignores_empty_and_unsupported_dirs(
     assert series_dir_contains_candidate_video(empty) is False
     assert series_dir_contains_candidate_video(unsupported) is False
     assert series_dir_contains_candidate_video(ignored) is False
+
+
+def test_finalize_series_dir_after_apply_archives_remaining_source_tree(
+    tmp_path: Path,
+) -> None:
+    series_dir = tmp_path / "Show"
+    output_root = tmp_path / "output"
+    source = series_dir / "Season 1" / "ep1.mkv"
+    note = series_dir / "notes.txt"
+    destination = output_root / "Show (2020) {tmdb-1}" / "S01" / "Show S01E01.mkv"
+    source.parent.mkdir(parents=True)
+    destination.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+    note.write_bytes(b"notes")
+    before_files = snapshot_series_files(series_dir)
+    plan = RenamePlan(
+        tmdb_id=1,
+        series_name_zh_cn="Show",
+        year=2020,
+        series_dir=series_dir,
+        output_root=output_root,
+        moves=(
+            PlannedMove(src=source, dst=destination, kind="video", src_id=1),
+        ),
+    )
+
+    source.unlink()
+    destination.write_bytes(b"video")
+
+    result = finalize_series_dir_after_apply(
+        series_dir,
+        plan,
+        before_files=before_files,
+    )
+
+    assert result.status == "archived"
+    assert result.archive_path == tmp_path / "archive" / "Show"
+    assert not series_dir.exists()
+    assert (result.archive_path / "notes.txt").read_bytes() == b"notes"
+
+
+def test_finalize_series_dir_after_apply_skips_when_source_changed(
+    tmp_path: Path,
+) -> None:
+    series_dir = tmp_path / "Show"
+    output_root = tmp_path / "output"
+    source = series_dir / "ep1.mkv"
+    destination = output_root / "Show (2020) {tmdb-1}" / "S01" / "Show S01E01.mkv"
+    series_dir.mkdir()
+    destination.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+    before_files = snapshot_series_files(series_dir)
+    plan = RenamePlan(
+        tmdb_id=1,
+        series_name_zh_cn="Show",
+        year=2020,
+        series_dir=series_dir,
+        output_root=output_root,
+        moves=(
+            PlannedMove(src=source, dst=destination, kind="video", src_id=1),
+        ),
+    )
+
+    source.unlink()
+    (series_dir / "new-download.mkv").write_bytes(b"new")
+
+    result = finalize_series_dir_after_apply(
+        series_dir,
+        plan,
+        before_files=before_files,
+    )
+
+    assert result.status == "skipped"
+    assert result.archive_path is None
+    assert series_dir.exists()
+    assert (series_dir / "new-download.mkv").read_bytes() == b"new"
+
+
+def test_finalize_series_dir_after_apply_skips_when_env_entry_exists(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    series_dir = tmp_path / "Show"
+    output_root = tmp_path / "output"
+    source = series_dir / "ep1.mkv"
+    destination = output_root / "Show (2020) {tmdb-1}" / "S01" / "Show S01E01.mkv"
+    series_dir.mkdir()
+    destination.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+    before_files = snapshot_series_files(series_dir)
+    plan = RenamePlan(
+        tmdb_id=1,
+        series_name_zh_cn="Show",
+        year=2020,
+        series_dir=series_dir,
+        output_root=output_root,
+        moves=(
+            PlannedMove(src=source, dst=destination, kind="video", src_id=1),
+        ),
+    )
+
+    source.unlink()
+    destination.write_bytes(b"video")
+
+    def fake_walk(path: Path, *_args, **_kwargs):  # noqa: ANN202
+        assert Path(path) == series_dir
+        yield str(series_dir), [], [".env.secret"]
+
+    monkeypatch.setattr(monitoring.os, "walk", fake_walk)
+
+    result = finalize_series_dir_after_apply(
+        series_dir,
+        plan,
+        before_files=before_files,
+    )
+
+    assert result.status == "skipped"
+    assert result.archive_path is None
+    assert series_dir.exists()
+
+
+def test_finalize_series_dir_after_apply_skips_nested_env_in_skipped_dir(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    series_dir = tmp_path / "Show"
+    output_root = tmp_path / "output"
+    source = series_dir / "ep1.mkv"
+    destination = output_root / "Show (2020) {tmdb-1}" / "S01" / "Show S01E01.mkv"
+    series_dir.mkdir()
+    destination.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+    before_files = snapshot_series_files(series_dir)
+    plan = RenamePlan(
+        tmdb_id=1,
+        series_name_zh_cn="Show",
+        year=2020,
+        series_dir=series_dir,
+        output_root=output_root,
+        moves=(
+            PlannedMove(src=source, dst=destination, kind="video", src_id=1),
+        ),
+    )
+
+    source.unlink()
+    destination.write_bytes(b"video")
+
+    def fake_walk(path: Path, *_args, **_kwargs):  # noqa: ANN202
+        assert Path(path) == series_dir
+        yield str(series_dir), ["extras"], []
+        yield str(series_dir / "extras"), [], [".env.local"]
+
+    monkeypatch.setattr(monitoring.os, "walk", fake_walk)
+
+    result = finalize_series_dir_after_apply(
+        series_dir,
+        plan,
+        before_files=before_files,
+    )
+
+    assert result.status == "skipped"
+    assert result.archive_path is None
+    assert series_dir.exists()
+
+
+def test_finalize_series_dir_after_apply_does_not_move_late_env_entry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    series_dir = tmp_path / "Show"
+    output_root = tmp_path / "output"
+    source = series_dir / "ep1.mkv"
+    note = series_dir / "misc" / "notes.txt"
+    destination = output_root / "Show (2020) {tmdb-1}" / "S01" / "Show S01E01.mkv"
+    series_dir.mkdir()
+    note.parent.mkdir(parents=True)
+    destination.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+    note.write_bytes(b"notes")
+    before_files = snapshot_series_files(series_dir)
+    plan = RenamePlan(
+        tmdb_id=1,
+        series_name_zh_cn="Show",
+        year=2020,
+        series_dir=series_dir,
+        output_root=output_root,
+        moves=(
+            PlannedMove(src=source, dst=destination, kind="video", src_id=1),
+        ),
+    )
+    source.unlink()
+    destination.write_bytes(b"video")
+    original_archive = monitoring.archive_series_dir_files
+
+    def archive_with_late_env(path: Path, rel_paths: set[str]) -> Path:
+        (series_dir / "misc" / ".env.local").write_text("secret", encoding="utf-8")
+        return original_archive(path, rel_paths)
+
+    monkeypatch.setattr(monitoring, "archive_series_dir_files", archive_with_late_env)
+
+    result = finalize_series_dir_after_apply(
+        series_dir,
+        plan,
+        before_files=before_files,
+    )
+
+    assert result.status == "archived"
+    assert result.archive_path == tmp_path / "archive" / "Show"
+    assert (result.archive_path / "misc" / "notes.txt").read_bytes() == b"notes"
+    assert (series_dir / "misc" / ".env.local").read_text(encoding="utf-8") == "secret"
+    assert not (result.archive_path / "misc" / ".env.local").exists()

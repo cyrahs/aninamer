@@ -12,6 +12,8 @@ const state = {
   rematchPreviewGeneration: 0,
   detailRequestId: 0,
   detailLoadingJobId: null,
+  safetyLoadingJobId: null,
+  safetyError: null,
   jobsRefreshing: false,
   tokenExpiryTimer: null,
   tmdbInputSeededJobId: null,
@@ -412,9 +414,8 @@ async function loadJobDetail(jobId, options = {}) {
   renderJobs();
   els.refreshReview.disabled = true;
   try {
-    const [review, safety, operations] = await Promise.all([
+    const [review, operations] = await Promise.all([
       api(`/api/v1/jobs/${jobId}/review`),
-      api(`/api/v1/jobs/${jobId}/safety`),
       api(`/api/v1/jobs/${jobId}/operations`),
     ]);
     if (state.detailRequestId !== requestId || state.selectedJobId !== jobId) {
@@ -422,20 +423,54 @@ async function loadJobDetail(jobId, options = {}) {
     }
     state.detailLoadingJobId = null;
     state.review = review;
-    state.safety = safety;
+    state.safety = null;
+    state.safetyError = null;
     state.operations = operations.items;
     renderReview();
+    loadJobSafety(jobId, requestId);
   } catch (error) {
     if (state.detailRequestId !== requestId || state.selectedJobId !== jobId) {
       return;
     }
     state.detailLoadingJobId = null;
+    if (state.safetyLoadingJobId === jobId) {
+      state.safetyLoadingJobId = null;
+    }
     if (keepCurrentDetail) {
       renderReview();
     } else {
       clearDetail();
     }
     showNotice(error.message, true);
+  }
+}
+
+async function loadJobSafety(jobId, requestId) {
+  state.safetyLoadingJobId = jobId;
+  state.safetyError = null;
+  if (state.review?.job.id === jobId) {
+    renderReview();
+  }
+  try {
+    const safety = await api(`/api/v1/jobs/${jobId}/safety`);
+    if (state.detailRequestId !== requestId || state.selectedJobId !== jobId) {
+      return;
+    }
+    state.safety = safety;
+    state.safetyError = null;
+  } catch (error) {
+    if (state.detailRequestId !== requestId || state.selectedJobId !== jobId) {
+      return;
+    }
+    state.safety = null;
+    state.safetyError = error.message || "安全摘要加载失败";
+  } finally {
+    if (state.detailRequestId === requestId && state.selectedJobId === jobId) {
+      state.safetyLoadingJobId = null;
+      if (state.review?.job.id === jobId) {
+        renderReview();
+      }
+    }
   }
 }
 
@@ -533,9 +568,16 @@ function renderReview() {
     `${review.selected_tmdb_info.candidates.length} 个`,
     review.selected_tmdb_info.candidates.length > 0,
   );
+  const safetyLoading = state.safetyLoadingJobId === review.job.id;
   renderDefinitionList(els.safetyInfo, {
-    watcher: safety?.watcher_status?.status || "-",
-    proof: safety?.review_exclusion_proof?.status || review.review_exclusion_proof.status,
+    watcher: safetyLoading
+      ? "加载中"
+      : state.safetyError
+        ? "加载失败"
+        : safety?.watcher_status?.status || "-",
+    proof: safetyLoading
+      ? "加载中"
+      : safety?.review_exclusion_proof?.status || review.review_exclusion_proof.status,
     token: tokenLabel(safetyForJob, reviewSafetyReady),
   });
   const rawValidationForJob =
@@ -2571,6 +2613,8 @@ function clearDetail(options = {}) {
   }
   state.review = null;
   state.safety = null;
+  state.safetyLoadingJobId = null;
+  state.safetyError = null;
   state.operations = [];
   els.jobTitle.textContent = "选择一个 job";
   els.jobMeta.textContent = "";

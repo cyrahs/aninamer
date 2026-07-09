@@ -357,13 +357,21 @@ def test_worker_auto_applies_existing_planned_job_through_api_operations(
         app_config,
         worker=replace(app_config.worker, auto_apply=True),
     )
-    worker = AninamerWorker(auto_config, runtime_store)
+    worker = AninamerWorker(
+        auto_config,
+        runtime_store,
+        tmdb_client_factory=lambda: FakeTMDBClient(),
+    )
 
     worker.scan_once()
 
     updated = runtime_store.get_job(job.id)
     assert updated is not None
     assert updated.status == "succeeded"
+    assert updated.archive_path is not None
+    assert Path(updated.archive_path).parent.name == "archive"
+    assert Path(updated.archive_path).exists()
+    assert not series_dir.exists()
     assert not source_video.exists()
     assert not source_subtitle.exists()
     assert destinations["video"].read_bytes() == b"video"
@@ -382,8 +390,17 @@ def test_worker_auto_applies_existing_planned_job_through_api_operations(
     assert operations[1].idempotency_key.startswith(f"auto-apply-{job.id}-")
     assert operations[0].result_summary["response_payload"]["status"] == "valid"
     assert operations[1].result_summary["response_payload"]["status"] == "succeeded"
+    assert operations[1].result_summary["finalize"]["status"] == "archived"
+    result_artifact = runtime_store.load_artifact(job.id, "result")
+    assert result_artifact is not None
+    assert result_artifact["finalize"]["status"] == "archived"
     item_results = runtime_store.list_operation_item_results(operations[1].id)
     assert [item.status for item in item_results] == ["succeeded", "succeeded"]
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == ["job_apply_succeeded"]
+    assert notifications[0].severity == "success"
+    assert notifications[0].payload == {"finalize_status": "archived"}
+    assert notifications[0].delivery_status == "disabled"
 
 
 def test_worker_auto_apply_invalid_validation_is_not_repeated(
@@ -429,6 +446,42 @@ def test_worker_auto_apply_invalid_validation_is_not_repeated(
     payload = operations[0].result_summary["response_payload"]
     assert payload["status"] == "invalid"
     assert payload["blocking_items"][0]["code"] == "destination_exists"
+
+
+def test_worker_auto_apply_success_delivers_webhook_notification(
+    app_config_with_notifications,
+    runtime_store: RuntimeStore,
+) -> None:
+    transport = CaptureWebhookTransport()
+    series_dir = app_config_with_notifications.watch_roots[0].input_root / "ShowA {tmdb-123}"
+    _write(series_dir / "ep1.mkv", b"video")
+    config = replace(
+        app_config_with_notifications,
+        worker=replace(app_config_with_notifications.worker, auto_apply=True),
+    )
+    worker = AninamerWorker(
+        config,
+        runtime_store,
+        tmdb_client_factory=lambda: FakeTMDBClient(),
+        llm_for_mapping_factory=lambda: FakeLLM(
+            '{"tmdb":123,"eps":[{"v":1,"s":1,"e1":1,"e2":1,"u":[]}]}'
+        ),
+        webhook_transport=transport,
+    )
+
+    worker.scan_once()
+    worker.scan_once()
+
+    notifications = runtime_store.list_notifications_after(0)
+    assert [item.event_kind for item in notifications] == ["job_apply_succeeded"]
+    delivered = notifications[0]
+    assert delivered.delivery_status == "delivered"
+    assert delivered.image_url == "https://image.tmdb.org/t/p/original/poster.jpg"
+    assert transport.calls == 1
+    body = json.loads((transport.last_body or b"{}").decode("utf-8"))
+    assert body["pin"] is False
+    assert body["image_url"] == "https://image.tmdb.org/t/p/original/poster.jpg"
+    assert body["disable_notification"] is False
 
 
 def test_worker_empty_plan_fails_without_archive_when_auto_apply_enabled(
