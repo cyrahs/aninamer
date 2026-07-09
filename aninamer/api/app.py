@@ -87,6 +87,10 @@ def create_app(
     def get_ui() -> FileResponse:
         return FileResponse(static_dir / "index.html")
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    def get_favicon() -> FileResponse:
+        return FileResponse(static_dir / "favicon.ico")
+
     @app.get(
         "/healthz",
         response_model=HealthResponse,

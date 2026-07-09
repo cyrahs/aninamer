@@ -242,11 +242,45 @@ def test_ui_static_assets_are_served_without_api_token(
     with TestClient(app) as client:
         index_response = client.get("/ui")
         script_response = client.get("/ui/app.js")
+        favicon_response = client.get("/favicon.ico")
+        favicon_png_response = client.get("/ui/favicon-32x32.png")
+        touch_icon_response = client.get("/ui/apple-touch-icon.png")
+        manifest_response = client.get("/ui/site.webmanifest")
+        cached_favicon_response = client.get(
+            "/ui/favicon-32x32.png",
+            headers={"If-None-Match": favicon_png_response.headers["etag"]},
+        )
 
     assert index_response.status_code == 200
     assert "aninamer review" in index_response.text
+    assert 'href="/ui/favicon.ico"' in index_response.text
+    assert 'href="/ui/apple-touch-icon.png"' in index_response.text
+    assert 'href="/ui/site.webmanifest"' in index_response.text
     assert script_response.status_code == 200
     assert "loadRuntimeAndJobs" in script_response.text
+    assert favicon_response.status_code == 200
+    assert favicon_response.headers["content-type"] == "image/vnd.microsoft.icon"
+    assert favicon_png_response.status_code == 200
+    assert favicon_png_response.headers["content-type"] == "image/png"
+    assert touch_icon_response.status_code == 200
+    assert touch_icon_response.headers["content-type"] == "image/png"
+    assert manifest_response.status_code == 200
+    assert manifest_response.headers["content-type"].startswith(
+        "application/manifest+json"
+    )
+    assert manifest_response.json()["icons"] == [
+        {
+            "src": "/ui/android-chrome-192x192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+        },
+        {
+            "src": "/ui/android-chrome-512x512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+        },
+    ]
+    assert cached_favicon_response.status_code == 304
 
 
 def test_healthz_reports_ok_when_worker_thread_is_running(
