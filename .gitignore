@@ -219,3 +219,6 @@ __marimo__/
 .vscode
 
 logs/
+
+# Local browser validation artifacts
+/output/

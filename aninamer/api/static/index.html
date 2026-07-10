@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#02043f" />
+    <meta name="theme-color" content="#0f766e" />
     <title>aninamer review</title>
     <link rel="icon" href="/ui/favicon.ico" sizes="16x16 32x32 48x48" />
     <link rel="icon" type="image/png" sizes="32x32" href="/ui/favicon-32x32.png" />
@@ -13,28 +13,48 @@
     <link rel="stylesheet" href="/ui/styles.css" />
   </head>
   <body>
+    <a class="skip-link" href="#mainContent">跳到主要内容</a>
     <div class="app-shell">
-      <aside class="sidebar">
+      <aside id="sidebar" class="sidebar">
         <header class="brand">
-          <h1>aninamer</h1>
-          <span id="runtimeStatus">未连接</span>
+          <div class="brand-lockup">
+            <img src="/ui/android-chrome-192x192.png" alt="" width="40" height="40" />
+            <div>
+              <h1>aninamer</h1>
+              <p>媒体审查工作台</p>
+            </div>
+          </div>
+          <div class="brand-actions">
+            <span id="runtimeStatus" class="runtime-status" data-state="offline">未连接</span>
+            <button id="sidebarToggle" class="sidebar-toggle" type="button" aria-expanded="false" aria-controls="sidebarPanel">
+              任务 <span id="mobileJobCount">0</span>
+            </button>
+          </div>
         </header>
-        <form id="authForm" class="auth-form">
-          <label>
-            API Token
-            <input id="apiToken" name="apiToken" type="password" autocomplete="current-password" />
-          </label>
-          <button type="submit">保存</button>
-        </form>
-        <div class="toolbar">
-          <button id="refreshJobs" type="button">刷新</button>
+        <div id="sidebarPanel" class="sidebar-panel">
+          <form id="authForm" class="auth-form">
+            <label>
+              API Token
+              <input id="apiToken" name="apiToken" type="password" autocomplete="current-password" aria-describedby="authHint" />
+            </label>
+            <button type="submit">连接</button>
+            <p id="authHint" class="auth-hint">令牌仅保存在当前浏览器中。</p>
+          </form>
+          <div class="toolbar">
+            <div class="toolbar-title">
+              <strong>任务队列</strong>
+              <span id="jobCount" class="count-badge">0</span>
+            </div>
+            <button id="refreshJobs" type="button">刷新</button>
+          </div>
+          <nav id="jobList" class="job-list" aria-label="任务列表"></nav>
         </div>
-        <nav id="jobList" class="job-list" aria-label="jobs"></nav>
       </aside>
 
-      <main class="workspace">
+      <main id="mainContent" class="workspace">
         <section class="topbar">
           <div>
+            <p class="eyebrow">审查工作台</p>
             <h2 id="jobTitle">选择一个 job</h2>
             <p id="jobMeta"></p>
           </div>
@@ -45,7 +65,19 @@
 
         <section id="notice" class="notice hidden" role="status" aria-live="polite"></section>
 
-        <section class="summary-grid">
+        <section id="workspaceEmpty" class="workspace-empty" aria-live="polite">
+          <img src="/ui/android-chrome-192x192.png" alt="" width="72" height="72" />
+          <p id="workspaceEmptyKicker" class="eyebrow">准备开始</p>
+          <h3 id="workspaceEmptyTitle">连接服务后开始审查</h3>
+          <p id="workspaceEmptyText">输入 API Token，即可加载待审查任务。</p>
+        </section>
+
+        <aside id="compactModeNotice" class="compact-mode-notice" aria-label="窄屏模式说明" hidden>
+          <strong>窄屏只读模式</strong>
+          <span>可以查看匹配和操作状态；请使用至少 1024px 宽的窗口执行修正、应用或回撤。</span>
+        </aside>
+
+        <section class="summary-grid" hidden>
           <article class="summary-card summary-card-wide">
             <h3>就绪状态</h3>
             <dl id="readiness"></dl>
@@ -65,7 +97,14 @@
           </article>
         </section>
 
-        <section class="workflow-panel" aria-label="review 操作">
+        <section class="workflow-panel" aria-label="review 操作" hidden>
+          <header class="workflow-panel-heading">
+            <div>
+              <p class="eyebrow">安全工作流</p>
+              <h3>后续操作</h3>
+            </div>
+            <p>审查匹配结果后，再执行重匹配、应用或回撤。</p>
+          </header>
           <article class="workflow-card">
             <div class="section-heading">
               <div>
@@ -89,6 +128,7 @@
               <summary id="tmdbCandidatesSummary">TMDB 候选</summary>
               <div id="tmdbCandidates" class="tmdb-candidates"></div>
             </details>
+            <p id="rematchActionHint" class="action-hint" aria-live="polite"></p>
           </article>
 
           <article class="workflow-card">
@@ -107,6 +147,7 @@
               <summary id="validationDetailsSummary">验证明细</summary>
               <div id="validationDetails" class="detail-list"></div>
             </details>
+            <p id="applyActionHint" class="action-hint" aria-live="polite"></p>
           </article>
 
           <article class="workflow-card">
@@ -150,10 +191,21 @@
               <summary id="rollbackDetailsSummary">回撤明细</summary>
               <div id="rollbackDetails" class="detail-list"></div>
             </details>
+            <p id="rollbackActionHint" class="action-hint" aria-live="polite"></p>
           </article>
         </section>
 
-        <section class="review-main">
+        <section class="review-main" hidden>
+          <header class="review-heading">
+            <div>
+              <p class="eyebrow">核心审查</p>
+              <h3>匹配结果</h3>
+            </div>
+            <p>
+              <span class="desktop-only">点击剧集或字幕行可快速填入手动修正。</span>
+              <span class="compact-only">按源文件核对匹配结果；修正操作请切换到桌面宽度。</span>
+            </p>
+          </header>
           <div class="tabs">
             <div class="tab-buttons" role="tablist">
               <button id="tabButtonMapping" class="tab active" data-tab="mapping" type="button" role="tab" aria-selected="true" aria-controls="tab-mapping">匹配</button>
@@ -201,12 +253,13 @@
                       </select>
                     </label>
                   </div>
+                  <p id="correctionActionHint" class="action-hint" aria-live="polite"></p>
                 </form>
                 <div class="split">
                   <section>
                     <h3>剧集目标</h3>
                     <div class="table-wrap">
-                      <table>
+                      <table class="responsive-table">
                         <thead>
                           <tr>
                             <th>ID</th>
@@ -223,7 +276,7 @@
                   <section>
                     <h3>字幕关联</h3>
                     <div class="table-wrap">
-                      <table>
+                      <table class="responsive-table">
                         <thead>
                           <tr>
                             <th>ID</th>
@@ -242,7 +295,7 @@
 
               <div id="tab-files" class="tab-panel" role="tabpanel" aria-labelledby="tabButtonFiles">
                 <div class="table-wrap">
-                  <table>
+                  <table class="responsive-table">
                     <thead>
                       <tr>
                         <th>ID</th>
@@ -260,7 +313,7 @@
 
               <div id="tab-moves" class="tab-panel" role="tabpanel" aria-labelledby="tabButtonMoves">
                 <div class="table-wrap">
-                  <table>
+                  <table class="responsive-table">
                     <thead>
                       <tr>
                         <th>ID</th>
@@ -285,7 +338,7 @@
                   <div id="rematchTmdbDetails" class="tmdb-preview-block"></div>
                   <dl id="rematchInfo"></dl>
                   <div class="table-wrap rematch-table">
-                    <table>
+                    <table class="responsive-table">
                       <thead>
                         <tr>
                           <th>源 ID</th>
@@ -307,7 +360,7 @@
 
               <div id="tab-operations" class="tab-panel" role="tabpanel" aria-labelledby="tabButtonOperations">
                 <div class="table-wrap">
-                  <table>
+                  <table class="responsive-table">
                     <thead>
                       <tr>
                         <th>ID</th>
@@ -325,7 +378,7 @@
         </section>
       </main>
     </div>
-    <dialog id="confirmDialog" class="confirm-dialog">
+    <dialog id="confirmDialog" class="confirm-dialog" aria-labelledby="confirmTitle" aria-describedby="confirmSummary">
       <div class="confirm-box">
         <header>
           <h3 id="confirmTitle">确认操作</h3>

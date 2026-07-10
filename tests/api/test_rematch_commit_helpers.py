@@ -5174,7 +5174,7 @@ def test_frontend_renders_rollback_gate_flow_in_workflow_panel() -> None:
     details_start = html.index('id="rollbackDetails"', flow_start)
     rollback_card_end = html.index("</article>", rollback_start)
     rollback_markup = html[rollback_start:details_start]
-    review_main_start = html.index('<section class="review-main">')
+    review_main_start = html.index('<section class="review-main"')
     topbar_start = html.index('<section class="topbar">')
     topbar_end = html.index("</section>", topbar_start)
     topbar_markup = html[topbar_start:topbar_end]
@@ -5182,6 +5182,7 @@ def test_frontend_renders_rollback_gate_flow_in_workflow_panel() -> None:
     assert "operation-rail" not in html
     assert "review-layout" not in html
     assert workflow_start < review_main_start
+    assert "arrangeWorkspaceSections()" in source
     assert details_start < rollback_card_end
 
     for element_id in [
@@ -5547,7 +5548,7 @@ def test_frontend_renders_tmdb_details_disclosures_and_rematch_instructions() ->
         "updateDisclosureSummary(",
         "readinessDisclosureText(review.readiness_summary)",
         "validationDisclosureText(validationForJob)",
-        "review.selected_tmdb_info.candidates.length > 0",
+        '"TMDB 候选",\n    `${review.selected_tmdb_info.candidates.length} 个`,\n    false',
     ]:
         assert expected in render_body
 
@@ -5558,9 +5559,17 @@ def test_frontend_renders_tmdb_details_disclosures_and_rematch_instructions() ->
         "function formatSeasonCounts",
         "function specialsDisclosure",
         "function updateDisclosureSummary",
+        "function disclosurePreferenceKey",
         "https://www.themoviedb.org/tv/",
     ]:
         assert helper in source
+
+    disclosure_body = source[
+        source.index("function updateDisclosureSummary")
+        : source.index("function readinessDisclosureText")
+    ]
+    assert "state.disclosurePreferences.get" in disclosure_body
+    assert "preference === undefined ? Boolean(open) : preference" in disclosure_body
 
     input_listener = source[
         source.index('els.rematchInstructions.addEventListener("input"')
@@ -6254,6 +6263,89 @@ def test_frontend_renders_empty_states_for_lists_and_tables() -> None:
     assert ".job-empty" in styles
 
 
+def test_frontend_prioritizes_review_and_supports_compact_read_only_layout() -> None:
+    html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
+    source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
+    styles = Path("aninamer/api/static/styles.css").read_text(encoding="utf-8")
+
+    for element_id in [
+        "sidebarPanel",
+        "sidebarToggle",
+        "jobCount",
+        "workspaceEmpty",
+        "compactModeNotice",
+        "rematchActionHint",
+        "applyActionHint",
+        "rollbackActionHint",
+        "correctionActionHint",
+    ]:
+        assert f'id="{element_id}"' in html
+        assert f'querySelector("#{element_id}")' in source
+
+    assert html.count('class="responsive-table"') == 6
+    assert 'aria-labelledby="confirmTitle"' in html
+    assert 'aria-describedby="confirmSummary"' in html
+    assert "function arrangeWorkspaceSections" in source
+    assert "els.compactModeNotice.after(els.reviewMain)" in source
+    assert "els.summaryGrid.after(els.reviewMain)" in source
+
+    for helper in [
+        "function setWorkspaceState",
+        "function setSidebarOpen",
+        "function isCompactReadOnly",
+        "function syncCompactFields",
+        "function ensureWritableViewport",
+        "function isCurrentJobsRequest",
+        "function sourceFileCell",
+        "function linkedItemsCell",
+    ]:
+        assert helper in source
+
+    assert 'window.matchMedia("(max-width: 1023px)")' in source
+    assert "renderEpisodeRows(review.episode_targets, review.source_files)" in source
+    assert "renderSubtitleRows(review.subtitle_links, review.source_files, review.episode_targets)" in source
+    assert "jobsRefreshingToken: null" in source
+    assert "jobsRequestId: 0" in source
+    assert "state.jobsRefreshingToken === requestToken" in source
+    assert 'api("/api/v1/runtime", { authToken: requestToken })' in source
+    assert 'api("/api/v1/jobs", { authToken: requestToken })' in source
+    assert "!isCurrentJobsRequest(requestId, requestToken)" in source
+    assert "state.token === requestToken" in source
+    token_change_body = source[
+        source.index('els.authForm.addEventListener("submit"')
+        : source.index('els.sidebarToggle.addEventListener("click"')
+    ]
+    assert "const tokenChanged = nextToken !== state.token" in token_change_body
+    assert "clearDetail();" in token_change_body
+    assert "preserveTmdbInput" not in token_change_body
+
+    for function_name in ["renderEpisodeRows", "renderSubtitleRows"]:
+        body = source[
+            source.index(f"function {function_name}")
+            : source.index("function ", source.index(f"function {function_name}") + 1)
+        ]
+        assert "if (!isCompactReadOnly())" in body
+        assert "makeClickableRow" in body
+
+    assert "function row(cells, labels = [])" in source
+    assert "td.dataset.label = labels[index]" in source
+    assert 'name.className = "path-name"' in source
+    assert 'parentNode.className = "path-parent"' in source
+
+    for expected in [
+        "@media (max-width: 1023px)",
+        ".compact-mode-notice:not([hidden])",
+        ".correction-form",
+        ".sidebar.mobile-open .sidebar-panel",
+        ".responsive-table tbody tr td::before",
+        "content: attr(data-label)",
+        "min-height: 44px",
+        ":focus-visible",
+        "@media (prefers-reduced-motion: reduce)",
+    ]:
+        assert expected in styles
+
+
 def test_frontend_sets_tab_and_notice_accessibility_state() -> None:
     html = Path("aninamer/api/static/index.html").read_text(encoding="utf-8")
     source = Path("aninamer/api/static/app.js").read_text(encoding="utf-8")
@@ -6325,7 +6417,7 @@ def test_frontend_auto_refreshes_job_list_without_refreshing_detail() -> None:
     assert "async function loadRuntimeAndJobs(options = {})" in load_body
     assert "const refreshSelectedDetail = options.refreshSelectedDetail ?? true" in load_body
     assert "const quiet = Boolean(options.quiet)" in load_body
-    assert "if (state.jobsRefreshing)" in load_body
+    assert "if (state.jobsRefreshing && state.jobsRefreshingToken === requestToken)" in load_body
     assert "state.jobsRefreshing = true" in load_body
     assert "if (!quiet)" in load_body
     detail_branch = load_body[

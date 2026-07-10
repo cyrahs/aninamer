@@ -1,7 +1,11 @@
+const storedToken = localStorage.getItem("aninamer.token") || "";
+const storedJobId = Number(localStorage.getItem("aninamer.selectedJobId"));
+const compactViewport = window.matchMedia("(max-width: 1023px)");
+
 const state = {
-  token: localStorage.getItem("aninamer.token") || "",
+  token: storedToken,
   jobs: [],
-  selectedJobId: null,
+  selectedJobId: Number.isInteger(storedJobId) && storedJobId > 0 ? storedJobId : null,
   review: null,
   safety: null,
   operations: [],
@@ -15,6 +19,8 @@ const state = {
   safetyLoadingJobId: null,
   safetyError: null,
   jobsRefreshing: false,
+  jobsRefreshingToken: null,
+  jobsRequestId: 0,
   tokenExpiryTimer: null,
   tmdbInputSeededJobId: null,
   tmdbInputEditedJobId: null,
@@ -27,6 +33,7 @@ const state = {
   rematchPreviewing: false,
   rematchCommitting: false,
   correctionSubmitting: false,
+  disclosurePreferences: new Map(),
 };
 
 const JOB_AUTO_REFRESH_MS = 30_000;
@@ -136,6 +143,11 @@ const UI_LABELS = {
 };
 
 const els = {
+  sidebar: document.querySelector("#sidebar"),
+  sidebarPanel: document.querySelector("#sidebarPanel"),
+  sidebarToggle: document.querySelector("#sidebarToggle"),
+  mobileJobCount: document.querySelector("#mobileJobCount"),
+  jobCount: document.querySelector("#jobCount"),
   runtimeStatus: document.querySelector("#runtimeStatus"),
   authForm: document.querySelector("#authForm"),
   apiToken: document.querySelector("#apiToken"),
@@ -164,6 +176,14 @@ const els = {
   jobTitle: document.querySelector("#jobTitle"),
   jobMeta: document.querySelector("#jobMeta"),
   notice: document.querySelector("#notice"),
+  workspaceEmpty: document.querySelector("#workspaceEmpty"),
+  workspaceEmptyKicker: document.querySelector("#workspaceEmptyKicker"),
+  workspaceEmptyTitle: document.querySelector("#workspaceEmptyTitle"),
+  workspaceEmptyText: document.querySelector("#workspaceEmptyText"),
+  compactModeNotice: document.querySelector("#compactModeNotice"),
+  summaryGrid: document.querySelector(".summary-grid"),
+  workflowPanel: document.querySelector(".workflow-panel"),
+  reviewMain: document.querySelector(".review-main"),
   readiness: document.querySelector("#readiness"),
   readinessDetailsDisclosure: document.querySelector("#readinessDetailsDisclosure"),
   readinessDetailsSummary: document.querySelector("#readinessDetailsSummary"),
@@ -197,6 +217,10 @@ const els = {
   rematchInfo: document.querySelector("#rematchInfo"),
   rematchTmdbDetails: document.querySelector("#rematchTmdbDetails"),
   rematchRows: document.querySelector("#rematchRows"),
+  rematchActionHint: document.querySelector("#rematchActionHint"),
+  applyActionHint: document.querySelector("#applyActionHint"),
+  rollbackActionHint: document.querySelector("#rollbackActionHint"),
+  correctionActionHint: document.querySelector("#correctionActionHint"),
   confirmDialog: document.querySelector("#confirmDialog"),
   confirmTitle: document.querySelector("#confirmTitle"),
   confirmSummary: document.querySelector("#confirmSummary"),
@@ -209,13 +233,35 @@ const els = {
 
 els.apiToken.value = state.token;
 
-els.authForm.addEventListener("submit", (event) => {
+els.authForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  state.token = els.apiToken.value.trim();
+  const nextToken = els.apiToken.value.trim();
+  const tokenChanged = nextToken !== state.token;
+  state.token = nextToken;
+  if (tokenChanged) {
+    state.jobs = [];
+    state.selectedJobId = null;
+    localStorage.removeItem("aninamer.selectedJobId");
+    clearDetail();
+    renderJobs();
+  }
+  if (!state.token) {
+    localStorage.removeItem("aninamer.token");
+    setRuntimeStatus("未连接", "offline");
+    setWorkspaceState("disconnected");
+    showNotice("请输入 API Token 后再连接。", true);
+    return;
+  }
   localStorage.setItem("aninamer.token", state.token);
-  loadRuntimeAndJobs();
+  const loaded = await loadRuntimeAndJobs();
+  if (loaded) {
+    setSidebarOpen(false);
+  }
 });
 
+els.sidebarToggle.addEventListener("click", () => {
+  setSidebarOpen(!els.sidebar.classList.contains("mobile-open"));
+});
 els.refreshJobs.addEventListener("click", () => loadRuntimeAndJobs());
 els.refreshReview.addEventListener("click", () => {
   if (state.selectedJobId) {
@@ -256,6 +302,23 @@ els.rematchInstructions.addEventListener("input", () => {
 });
 
 const tabButtons = Array.from(document.querySelectorAll(".tab"));
+const disclosureElements = Array.from(document.querySelectorAll(".disclosure-details"));
+
+disclosureElements.forEach((details) => {
+  details.addEventListener("toggle", (event) => {
+    if (event.isTrusted) {
+      state.disclosurePreferences.set(disclosurePreferenceKey(details), details.open);
+    }
+  });
+});
+
+compactViewport.addEventListener("change", () => {
+  arrangeWorkspaceSections();
+  syncCompactFields();
+  if (state.review) {
+    renderReview();
+  }
+});
 
 tabButtons.forEach((button) => {
   button.addEventListener("click", () => activateTab(button));
@@ -299,21 +362,29 @@ function handleTabKeydown(event, button) {
 }
 
 async function api(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (state.token) {
-    headers.set("Authorization", `Bearer ${state.token}`);
+  const { authToken = state.token, ...fetchOptions } = options;
+  const headers = new Headers(fetchOptions.headers || {});
+  if (authToken) {
+    headers.set("Authorization", `Bearer ${authToken}`);
   }
-  if (options.body && !headers.has("Content-Type")) {
+  if (fetchOptions.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(path, { ...fetchOptions, headers });
   const text = await response.text();
   const payload = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    const message = payload?.error?.message || response.statusText;
+    const errorCode = payload?.error?.code || "";
+    const rawMessage = payload?.error?.message || response.statusText;
+    const message = friendlyApiError(
+      errorCode || rawMessage,
+      response.status,
+      rawMessage,
+    );
     const error = new Error(message);
     error.payload = payload;
     error.status = response.status;
+    error.code = errorCode;
     throw error;
   }
   return payload;
@@ -322,19 +393,37 @@ async function api(path, options = {}) {
 async function loadRuntimeAndJobs(options = {}) {
   const refreshSelectedDetail = options.refreshSelectedDetail ?? true;
   const quiet = Boolean(options.quiet);
-  if (state.jobsRefreshing) {
-    return;
+  const requestToken = state.token;
+  if (state.jobsRefreshing && state.jobsRefreshingToken === requestToken) {
+    return false;
   }
+  if (!requestToken) {
+    setRuntimeStatus("未连接", "offline");
+    setWorkspaceState("disconnected");
+    renderJobs();
+    return false;
+  }
+  const requestId = state.jobsRequestId + 1;
+  state.jobsRequestId = requestId;
   state.jobsRefreshing = true;
+  state.jobsRefreshingToken = requestToken;
+  setRuntimeStatus("连接中", "loading");
+  if (!state.review && !quiet) {
+    setWorkspaceState("loading");
+  }
   if (!quiet) {
     clearNotice();
   }
   try {
     const [runtime, jobs] = await Promise.all([
-      api("/api/v1/runtime"),
-      api("/api/v1/jobs"),
+      api("/api/v1/runtime", { authToken: requestToken }),
+      api("/api/v1/jobs", { authToken: requestToken }),
     ]);
-    els.runtimeStatus.textContent = `${runtime.watch_root_keys.length} roots`;
+    if (!isCurrentJobsRequest(requestId, requestToken)) {
+      return false;
+    }
+    const rootCount = runtime.watch_root_keys.length;
+    setRuntimeStatus(`${rootCount} 个目录`, "online");
     state.jobs = jobs.items;
     renderJobs();
     if (state.selectedJobId && state.jobs.some((job) => job.id === state.selectedJobId)) {
@@ -343,26 +432,50 @@ async function loadRuntimeAndJobs(options = {}) {
       }
     } else if (state.selectedJobId) {
       state.selectedJobId = null;
+      localStorage.removeItem("aninamer.selectedJobId");
       state.rollbackEligibility = null;
       state.rematchPreview = null;
       state.applyValidation = null;
       clearDetail();
       renderJobs();
+    } else {
+      setWorkspaceState(state.jobs.length ? "select" : "empty");
     }
+    if (!isCurrentJobsRequest(requestId, requestToken)) {
+      return false;
+    }
+    return true;
   } catch (error) {
-    els.runtimeStatus.textContent = "连接失败";
+    if (!isCurrentJobsRequest(requestId, requestToken)) {
+      return false;
+    }
+    setRuntimeStatus("连接失败", "error");
+    if (!state.review) {
+      setWorkspaceState("error", error.message);
+    }
     if (!quiet) {
       showNotice(error.message, true);
     }
+    return false;
   } finally {
-    state.jobsRefreshing = false;
+    if (state.jobsRequestId === requestId) {
+      state.jobsRefreshing = false;
+      state.jobsRefreshingToken = null;
+    }
   }
+}
+
+function isCurrentJobsRequest(requestId, requestToken) {
+  return state.jobsRequestId === requestId && state.token === requestToken;
 }
 
 function renderJobs() {
   els.jobList.replaceChildren();
+  const count = state.jobs.length;
+  els.jobCount.textContent = String(count);
+  els.mobileJobCount.textContent = String(count);
   if (!state.jobs.length) {
-    const node = empty("暂无 job，等待扫描");
+    const node = empty(state.token ? "暂无 job，等待扫描" : "连接后显示任务");
     node.classList.add("job-empty");
     els.jobList.append(node);
     return;
@@ -371,11 +484,19 @@ function renderJobs() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `job-item${job.id === state.selectedJobId ? " active" : ""}`;
+    button.setAttribute("aria-current", job.id === state.selectedJobId ? "true" : "false");
     button.innerHTML = `
-      <strong>${escapeHtml(job.series_name)}</strong>
-      <span>${job.id} · ${escapeHtml(labelFor(job.status))} · 视频 ${job.video_moves_count} · 字幕 ${job.subtitle_moves_count}</span>
+      <span class="job-item-heading">
+        <strong>${escapeHtml(job.series_name)}</strong>
+        <span class="job-status ${statusTone(job.status)}">${escapeHtml(labelFor(job.status))}</span>
+      </span>
+      <span class="job-item-meta">#${job.id} · 视频 ${job.video_moves_count} · 字幕 ${job.subtitle_moves_count}</span>
     `;
-    button.addEventListener("click", () => loadJobDetail(job.id));
+    button.addEventListener("click", () => {
+      localStorage.setItem("aninamer.selectedJobId", String(job.id));
+      setSidebarOpen(false);
+      loadJobDetail(job.id);
+    });
     els.jobList.append(button);
   }
 }
@@ -389,6 +510,7 @@ async function loadJobDetail(jobId, options = {}) {
     clearNotice();
   }
   state.selectedJobId = jobId;
+  localStorage.setItem("aninamer.selectedJobId", String(jobId));
   state.detailLoadingJobId = jobId;
   if (!options.preserveRollback) {
     state.rollbackEligibility = null;
@@ -410,6 +532,7 @@ async function loadJobDetail(jobId, options = {}) {
     state.detailLoadingJobId = jobId;
     els.jobTitle.textContent = "加载中";
     els.jobMeta.textContent = `job ${jobId}`;
+    setWorkspaceState("loading");
   }
   renderJobs();
   els.refreshReview.disabled = true;
@@ -440,6 +563,7 @@ async function loadJobDetail(jobId, options = {}) {
       renderReview();
     } else {
       clearDetail();
+      setWorkspaceState("error", error.message);
     }
     showNotice(error.message, true);
   }
@@ -479,6 +603,8 @@ function renderReview() {
   if (!review) {
     return;
   }
+  setWorkspaceState("review");
+  syncCompactFields();
   els.jobTitle.textContent = review.job.series_name;
   const loading = state.detailLoadingJobId === review.job.id;
   els.jobMeta.textContent = [
@@ -492,6 +618,9 @@ function renderReview() {
   ].filter(Boolean).join(" · ");
   els.refreshReview.disabled = loading;
   const actionBusy = isActionBusy();
+  const compactWriteReason = isCompactReadOnly()
+    ? "窄屏为只读模式，请使用至少 1024px 宽的窗口执行此操作"
+    : "";
   const safetyForJob =
     state.reviewSafetyCheck?.jobId === review.job.id
       ? state.reviewSafetyCheck.result
@@ -530,7 +659,7 @@ function renderReview() {
           : "";
   setButtonState(els.validateApply, Boolean(validateReason), validateReason);
   const previewReason =
-    actionBusy ? "等待当前操作完成后再预览重匹配" : "";
+    compactWriteReason || (actionBusy ? "等待当前操作完成后再预览重匹配" : "");
   setButtonState(els.previewRematch, Boolean(previewReason), previewReason);
   const previewForJob =
     state.rematchPreview?.jobId === review.job.id ? state.rematchPreview.result : null;
@@ -566,7 +695,7 @@ function renderReview() {
     els.tmdbCandidatesSummary,
     "TMDB 候选",
     `${review.selected_tmdb_info.candidates.length} 个`,
-    review.selected_tmdb_info.candidates.length > 0,
+    false,
   );
   const safetyLoading = state.safetyLoadingJobId === review.job.id;
   renderDefinitionList(els.safetyInfo, {
@@ -602,7 +731,9 @@ function renderReview() {
     hasValidationIssues(validationForJob),
   );
   const applyReason =
-    actionBusy
+    compactWriteReason
+      ? compactWriteReason
+      : actionBusy
       ? "等待当前操作完成后再应用"
       : state.validateChecking
         ? "等待验证完成"
@@ -622,7 +753,9 @@ function renderReview() {
     rollbackForJob.status === "eligible" &&
     isTimedTokenCurrent(rollbackForJob, "check_token");
   const withdrawReason =
-    state.rollbackChecking
+    compactWriteReason
+      ? compactWriteReason
+      : state.rollbackChecking
       ? "等待回撤资格检查完成"
       : actionBusy
         ? "等待当前操作完成后再执行回撤"
@@ -633,7 +766,9 @@ function renderReview() {
             : "";
   setButtonState(els.withdrawChecked, Boolean(withdrawReason), withdrawReason);
   const reopenReason =
-    state.rollbackChecking
+    compactWriteReason
+      ? compactWriteReason
+      : state.rollbackChecking
       ? "等待回撤资格检查完成"
       : actionBusy
         ? "等待当前操作完成后再重新打开"
@@ -660,8 +795,8 @@ function renderReview() {
     withdrawReason,
     reopenReason,
   });
-  renderEpisodeRows(review.episode_targets);
-  renderSubtitleRows(review.subtitle_links);
+  renderEpisodeRows(review.episode_targets, review.source_files);
+  renderSubtitleRows(review.subtitle_links, review.source_files, review.episode_targets);
   renderFileRows(review.source_files);
   renderMoveRows(review.move_items);
   renderEvidence(review.mapping_evidence);
@@ -673,7 +808,9 @@ function renderReview() {
     previewForJob
   );
   const commitRematchReason =
-    actionBusy
+    compactWriteReason
+      ? compactWriteReason
+      : actionBusy
       ? "等待当前操作完成后再提交预览"
       : !previewForJob
         ? "需先生成重匹配预览"
@@ -684,12 +821,21 @@ function renderReview() {
     commitRematchReason,
   );
   const correctionReason =
-    actionBusy
+    compactWriteReason
+      ? compactWriteReason
+      : actionBusy
       ? "等待当前操作完成后再提交修正"
       : !review.move_items.every((item) => item.status === "proposed")
         ? "只有待处理计划可手动修正"
         : "";
   setButtonState(els.submitCorrection, Boolean(correctionReason), correctionReason);
+  setActionHint(els.rematchActionHint, previewReason || commitRematchReason);
+  setActionHint(els.applyActionHint, applyReason || validateReason);
+  setActionHint(
+    els.rollbackActionHint,
+    withdrawReason || checkRollbackReason || reopenReason,
+  );
+  setActionHint(els.correctionActionHint, correctionReason);
 }
 
 function isWriteBusy() {
@@ -730,12 +876,119 @@ function labelFor(value) {
   return text;
 }
 
+function friendlyApiError(code, status, fallback) {
+  const normalized = String(code || "").trim();
+  const messages = {
+    missing_authorization: "请输入 API Token 后连接服务。",
+    invalid_authorization: "API Token 无效，请检查后重试。",
+    unauthorized: "API Token 无效或已失效，请重新连接。",
+    forbidden: "当前令牌没有执行此操作的权限。",
+  };
+  if (messages[normalized]) {
+    return messages[normalized];
+  }
+  if (status === 401) {
+    return messages.unauthorized;
+  }
+  if (status === 403) {
+    return messages.forbidden;
+  }
+  return fallback || normalized || `请求失败（${status}）`;
+}
+
+function setRuntimeStatus(text, mode) {
+  els.runtimeStatus.textContent = text;
+  els.runtimeStatus.dataset.state = mode;
+}
+
+function setWorkspaceState(mode, detail = "") {
+  const showingReview = mode === "review";
+  els.summaryGrid.hidden = !showingReview;
+  els.reviewMain.hidden = !showingReview;
+  els.workflowPanel.hidden = !showingReview;
+  els.compactModeNotice.hidden = !showingReview;
+  els.workspaceEmpty.hidden = showingReview;
+  document.body.dataset.workspaceState = mode;
+  if (showingReview) {
+    return;
+  }
+  const content = {
+    disconnected: ["连接服务", "连接服务后开始审查", "输入 API Token，即可加载待审查任务。"],
+    select: ["任务已就绪", "选择一个任务开始审查", "从任务列表选择需要核对的动画。"],
+    empty: ["任务队列", "暂时没有待审查任务", "后台会继续扫描监控目录，新任务出现后将自动刷新。"],
+    loading: ["正在加载", "正在准备审查数据", "正在获取匹配、移动计划与安全状态。"],
+    error: ["加载失败", "暂时无法显示审查数据", detail || "请检查连接后重试。"],
+  }[mode] || ["准备开始", "选择一个任务开始审查", "从任务列表选择任务。"];
+  els.workspaceEmptyKicker.textContent = content[0];
+  els.workspaceEmptyTitle.textContent = content[1];
+  els.workspaceEmptyText.textContent = content[2];
+}
+
+function setSidebarOpen(open) {
+  els.sidebar.classList.toggle("mobile-open", Boolean(open));
+  els.sidebarToggle.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function isCompactReadOnly() {
+  return compactViewport.matches;
+}
+
+function arrangeWorkspaceSections() {
+  if (isCompactReadOnly()) {
+    els.compactModeNotice.after(els.reviewMain);
+    els.reviewMain.after(els.summaryGrid);
+  } else {
+    els.summaryGrid.after(els.reviewMain);
+  }
+  els.summaryGrid.after(els.workflowPanel);
+  if (!isCompactReadOnly()) {
+    els.reviewMain.after(els.workflowPanel);
+  }
+}
+
+function syncCompactFields() {
+  const disabled = isCompactReadOnly();
+  for (const field of [
+    els.tmdbInput,
+    els.rematchInstructions,
+    els.correctionTargetId,
+    els.correctionSeason,
+    els.correctionStart,
+    els.correctionEnd,
+    els.correctionSubtitleLinkId,
+    els.correctionVariant,
+  ]) {
+    field.disabled = disabled;
+  }
+}
+
+function statusTone(status) {
+  if (["failed", "blocked", "apply_partial"].includes(status)) {
+    return "error";
+  }
+  if (["planned", "proposed", "warning"].includes(status)) {
+    return "warn";
+  }
+  if (["applied", "succeeded", "moved"].includes(status)) {
+    return "success";
+  }
+  return "neutral";
+}
+
 function ensureDetailIdle(message) {
   if (state.detailLoadingJobId === null) {
     return true;
   }
   showNotice(message, true);
   renderReview();
+  return false;
+}
+
+function ensureWritableViewport() {
+  if (!isCompactReadOnly()) {
+    return true;
+  }
+  showNotice("窄屏为只读模式，请使用至少 1024px 宽的窗口执行此操作。", true);
   return false;
 }
 
@@ -917,6 +1170,16 @@ function setRollbackStep(step, status, text, mode) {
 function setButtonState(button, disabled, reason = "") {
   button.disabled = disabled;
   button.title = disabled && reason ? reason : "";
+  if (disabled && reason) {
+    button.dataset.disabledReason = reason;
+  } else {
+    delete button.dataset.disabledReason;
+  }
+}
+
+function setActionHint(target, reason) {
+  target.textContent = reason || "";
+  target.classList.toggle("visible", Boolean(reason));
 }
 
 function updateDisclosureSummary(details, summary, label, status, open) {
@@ -930,7 +1193,12 @@ function updateDisclosureSummary(details, summary, label, status, open) {
   statusNode.className = "disclosure-status";
   statusNode.textContent = status;
   summary.replaceChildren(labelNode, statusNode);
-  details.open = Boolean(open);
+  const preference = state.disclosurePreferences.get(disclosurePreferenceKey(details));
+  details.open = preference === undefined ? Boolean(open) : preference;
+}
+
+function disclosurePreferenceKey(details) {
+  return `${state.review?.job?.id || "none"}:${details.id}`;
 }
 
 function readinessDisclosureText(summary) {
@@ -1278,6 +1546,7 @@ function renderTmdbCandidates(info) {
     button.type = "button";
     button.className = "tmdb-candidate-select";
     button.title = `填入 TMDB ID ${candidate.id}`;
+    button.disabled = isCompactReadOnly();
     const title = candidate.name || candidate.original_name || `TMDB ${candidate.id}`;
     const year = candidate.year || yearFromDate(candidate.first_air_date) || "-";
     const countries = Array.isArray(candidate.origin_country)
@@ -1304,7 +1573,12 @@ function renderTmdbCandidates(info) {
 }
 
 function selectTmdbCandidate(tmdbId) {
-  if (!state.review || !Number.isInteger(Number(tmdbId)) || Number(tmdbId) <= 0) {
+  if (
+    isCompactReadOnly() ||
+    !state.review ||
+    !Number.isInteger(Number(tmdbId)) ||
+    Number(tmdbId) <= 0
+  ) {
     return;
   }
   els.tmdbInput.value = String(tmdbId);
@@ -1314,40 +1588,78 @@ function selectTmdbCandidate(tmdbId) {
   renderReview();
 }
 
-function renderEpisodeRows(items) {
+function sourceFileMap(items) {
+  return new Map((items || []).map((item) => [item.id, item]));
+}
+
+function sourceFileCell(sourceId, sources) {
+  const wrap = document.createElement("span");
+  wrap.className = "source-file-cell";
+  const source = sources.get(sourceId);
+  if (source) {
+    wrap.append(pathCell(source.original_path || source.current_path));
+  } else {
+    wrap.append(textSpan("源文件不可用"));
+  }
+  const meta = document.createElement("span");
+  meta.className = "cell-meta";
+  meta.textContent = `源 #${sourceId}`;
+  wrap.append(meta);
+  return wrap;
+}
+
+function linkedItemsCell(ids, suffix) {
+  const span = document.createElement("span");
+  const values = Array.isArray(ids) ? ids : [];
+  span.textContent = values.length ? `${values.length} ${suffix}` : "无";
+  if (values.length) {
+    span.title = `关联 ID：${values.join(", ")}`;
+  }
+  return span;
+}
+
+function renderEpisodeRows(items, sourceFiles) {
   els.episodeRows.replaceChildren();
   if (!items.length) {
     els.episodeRows.append(emptyTableRow(5, "暂无 episode target"));
     return;
   }
+  const sources = sourceFileMap(sourceFiles);
   for (const item of items) {
     const tr = row([
       item.id,
-      item.video_source_id,
+      sourceFileCell(item.video_source_id, sources),
       formatEpisode(item),
       pill(item.status),
-      item.subtitle_link_ids.join(", ") || "-",
-    ]);
-    makeClickableRow(tr, "点击填入 episode 修正", () => prefillEpisodeCorrection(item));
+      linkedItemsCell(item.subtitle_link_ids, "条字幕"),
+    ], ["ID", "视频源", "目标", "状态", "字幕"]);
+    if (!isCompactReadOnly()) {
+      makeClickableRow(tr, "点击填入 episode 修正", () => prefillEpisodeCorrection(item));
+    }
     els.episodeRows.append(tr);
   }
 }
 
-function renderSubtitleRows(items) {
+function renderSubtitleRows(items, sourceFiles, episodeTargets) {
   els.subtitleRows.replaceChildren();
   if (!items.length) {
     els.subtitleRows.append(emptyTableRow(5, "暂无字幕关联"));
     return;
   }
+  const sources = sourceFileMap(sourceFiles);
+  const targets = new Map((episodeTargets || []).map((item) => [item.id, item]));
   for (const item of items) {
+    const episodeTarget = targets.get(item.episode_target_id);
     const tr = row([
       item.id,
-      item.episode_target_id,
-      item.subtitle_source_id,
-      item.variant_override || item.variant_detected,
+      episodeTarget ? formatEpisode(episodeTarget) : `#${item.episode_target_id}`,
+      sourceFileCell(item.subtitle_source_id, sources),
+      labelFor(item.variant_override || item.variant_detected),
       pill(item.status),
-    ]);
-    makeClickableRow(tr, "点击填入字幕修正", () => prefillSubtitleCorrection(item));
+    ], ["ID", "目标", "字幕源", "变体", "状态"]);
+    if (!isCompactReadOnly()) {
+      makeClickableRow(tr, "点击填入字幕修正", () => prefillSubtitleCorrection(item));
+    }
     els.subtitleRows.append(tr);
   }
 }
@@ -1400,8 +1712,8 @@ function renderFileRows(items) {
       pathCell(item.original_path),
       pathCell(item.current_path),
       pill(item.final_disposition, item.final_disposition === "failed" ? "error" : ""),
-      item.ignored_reason || item.detected_subtitle_variant || "-",
-    ]));
+      item.ignored_reason || labelFor(item.detected_subtitle_variant) || "-",
+    ], ["ID", "类型", "路径", "当前位置", "处置", "说明"]));
   }
 }
 
@@ -1420,7 +1732,7 @@ function renderMoveRows(items) {
       pathCell(item.planned_destination_path),
       pathCell(item.current_path),
       pill(item.status, item.status === "failed" ? "error" : ""),
-    ]));
+    ], ["ID", "源 ID", "类型", "源路径", "计划目标", "当前路径", "状态"]));
   }
 }
 
@@ -1457,7 +1769,7 @@ function renderOperations(items) {
       pill(item.status),
       formatDateTime(item.created_at),
       operationResultCell(item.result_summary),
-    ]));
+    ], ["ID", "类型", "状态", "创建时间", "结果"]));
   }
 }
 
@@ -1628,6 +1940,9 @@ async function applyValidated() {
   ) {
     return;
   }
+  if (!ensureWritableViewport()) {
+    return;
+  }
   if (validationForJob.status !== "valid") {
     showNotice("需要先通过全量验证", true);
     return;
@@ -1637,6 +1952,9 @@ async function applyValidated() {
     applyConfirmation(validationForJob)
   );
   if (!confirmed) {
+    return;
+  }
+  if (!ensureWritableViewport()) {
     return;
   }
   if (!ensureDetailIdle("等待刷新完成后再应用验证结果")) {
@@ -1718,11 +2036,17 @@ async function withdrawChecked() {
   ) {
     return;
   }
+  if (!ensureWritableViewport()) {
+    return;
+  }
   const jobId = state.review.job.id;
   const confirmed = await confirmDangerousAction(
     withdrawConfirmation(rollbackForJob)
   );
   if (!confirmed) {
+    return;
+  }
+  if (!ensureWritableViewport()) {
     return;
   }
   if (!ensureDetailIdle("等待刷新完成后再执行回撤")) {
@@ -1800,11 +2124,17 @@ async function reopenFromReview() {
   ) {
     return;
   }
+  if (!ensureWritableViewport()) {
+    return;
+  }
   const jobId = state.review.job.id;
   const confirmed = await confirmDangerousAction(
     reopenConfirmation(state.review)
   );
   if (!confirmed) {
+    return;
+  }
+  if (!ensureWritableViewport()) {
     return;
   }
   if (!ensureDetailIdle("等待刷新完成后再重新打开")) {
@@ -1864,6 +2194,9 @@ async function previewRematch() {
   }
   if (isActionBusy()) {
     showNotice("等待当前操作完成后再预览重匹配", true);
+    return;
+  }
+  if (!ensureWritableViewport()) {
     return;
   }
   const tmdbId = Number(els.tmdbInput.value);
@@ -1930,11 +2263,17 @@ async function commitRematch() {
   if (!state.review || !previewForJob || isActionBusy()) {
     return;
   }
+  if (!ensureWritableViewport()) {
+    return;
+  }
   const jobId = state.review.job.id;
   const confirmed = await confirmDangerousAction(
     rematchCommitConfirmation(previewForJob)
   );
   if (!confirmed) {
+    return;
+  }
+  if (!ensureWritableViewport()) {
     return;
   }
   if (!ensureDetailIdle("等待刷新完成后再提交重匹配")) {
@@ -1993,6 +2332,9 @@ async function submitCorrection() {
   }
   if (isActionBusy()) {
     showNotice("等待当前操作完成后再提交修正", true);
+    return;
+  }
+  if (!ensureWritableViewport()) {
     return;
   }
   const ops = buildCorrectionOps();
@@ -2355,7 +2697,7 @@ function renderRematchPreview(result) {
         ? pathCell(item.current_planned_destination_path)
         : "-",
       item.preview_destination_path ? pathCell(item.preview_destination_path) : "-",
-    ]));
+    ], ["源 ID", "类型", "变化", "当前计划目标", "预览目标"]));
   }
 }
 
@@ -2397,17 +2739,20 @@ function appendDefinitionItem(target, key, value) {
   target.append(dt, dd);
 }
 
-function row(cells) {
+function row(cells, labels = []) {
   const tr = document.createElement("tr");
-  for (const value of cells) {
+  cells.forEach((value, index) => {
     const td = document.createElement("td");
+    if (labels[index]) {
+      td.dataset.label = labels[index];
+    }
     if (value instanceof Node) {
       td.append(value);
     } else {
       td.textContent = value ?? "-";
     }
     tr.append(td);
-  }
+  });
   return tr;
 }
 
@@ -2492,10 +2837,25 @@ function pathCell(ref) {
   const span = document.createElement("span");
   span.className = "path";
   const text = ref?.display_path || ref?.rel_path || "-";
-  span.textContent = text;
-  if (text !== "-") {
-    span.title = text;
+  if (text === "-") {
+    span.textContent = text;
+    return span;
   }
+  const normalized = String(text).replaceAll("\\", "/");
+  const separator = normalized.lastIndexOf("/");
+  const basename = separator >= 0 ? normalized.slice(separator + 1) : normalized;
+  const parent = separator > 0 ? normalized.slice(0, separator) : "";
+  const name = document.createElement("strong");
+  name.className = "path-name";
+  name.textContent = basename || normalized;
+  span.append(name);
+  if (parent) {
+    const parentNode = document.createElement("span");
+    parentNode.className = "path-parent";
+    parentNode.textContent = parent;
+    span.append(parentNode);
+  }
+  span.title = text;
   return span;
 }
 
@@ -2658,6 +3018,14 @@ function clearDetail(options = {}) {
   }
   els.evidenceList.replaceChildren();
   els.rollbackDetails.replaceChildren();
+  for (const hint of [
+    els.rematchActionHint,
+    els.applyActionHint,
+    els.rollbackActionHint,
+    els.correctionActionHint,
+  ]) {
+    setActionHint(hint, "");
+  }
   renderNoJobEmptyState();
   updateDisclosureSummary(
     els.readinessDetailsDisclosure,
@@ -2705,6 +3073,13 @@ function clearDetail(options = {}) {
     "等待前置条件",
     "pending",
   );
+  if (!state.token) {
+    setWorkspaceState("disconnected");
+  } else if (!state.jobs.length) {
+    setWorkspaceState("empty");
+  } else {
+    setWorkspaceState("select");
+  }
 }
 
 function renderNoJobEmptyState() {
@@ -2732,6 +3107,9 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+arrangeWorkspaceSections();
+syncCompactFields();
+setSidebarOpen(!state.token);
 clearDetail({ preserveTmdbInput: true });
 startJobsAutoRefresh();
 loadRuntimeAndJobs();
