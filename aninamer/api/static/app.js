@@ -1,6 +1,9 @@
-const storedToken = localStorage.getItem("aninamer.token") || "";
-const storedJobId = Number(localStorage.getItem("aninamer.selectedJobId"));
+const storedToken = storageGet("aninamer.token") || "";
+const storedJobId = Number(storageGet("aninamer.selectedJobId"));
 const compactViewport = window.matchMedia("(max-width: 1023px)");
+const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+const THEME_STORAGE_KEY = "aninamer.theme";
+const THEME_COLORS = { light: "#0f766e", dark: "#0b1217" };
 
 const state = {
   token: storedToken,
@@ -148,6 +151,7 @@ const els = {
   sidebarToggle: document.querySelector("#sidebarToggle"),
   mobileJobCount: document.querySelector("#mobileJobCount"),
   jobCount: document.querySelector("#jobCount"),
+  themeSelect: document.querySelector("#themeSelect"),
   runtimeStatus: document.querySelector("#runtimeStatus"),
   authForm: document.querySelector("#authForm"),
   apiToken: document.querySelector("#apiToken"),
@@ -232,6 +236,29 @@ const els = {
 };
 
 els.apiToken.value = state.token;
+initializeThemeControl();
+
+els.themeSelect.addEventListener("change", () => {
+  applyThemePreference(els.themeSelect.value);
+});
+
+const handleSystemThemeChange = () => {
+  if (document.documentElement.dataset.theme === "system") {
+    applyThemePreference("system", { persist: false });
+  }
+};
+
+if (typeof systemThemeQuery.addEventListener === "function") {
+  systemThemeQuery.addEventListener("change", handleSystemThemeChange);
+} else {
+  systemThemeQuery.addListener(handleSystemThemeChange);
+}
+
+window.addEventListener("storage", (event) => {
+  if (event.key === THEME_STORAGE_KEY) {
+    applyThemePreference(event.newValue, { persist: false });
+  }
+});
 
 els.authForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -241,18 +268,18 @@ els.authForm.addEventListener("submit", async (event) => {
   if (tokenChanged) {
     state.jobs = [];
     state.selectedJobId = null;
-    localStorage.removeItem("aninamer.selectedJobId");
+    storageRemove("aninamer.selectedJobId");
     clearDetail();
     renderJobs();
   }
   if (!state.token) {
-    localStorage.removeItem("aninamer.token");
+    storageRemove("aninamer.token");
     setRuntimeStatus("未连接", "offline");
     setWorkspaceState("disconnected");
     showNotice("请输入 API Token 后再连接。", true);
     return;
   }
-  localStorage.setItem("aninamer.token", state.token);
+  storageSet("aninamer.token", state.token);
   const loaded = await loadRuntimeAndJobs();
   if (loaded) {
     setSidebarOpen(false);
@@ -432,7 +459,7 @@ async function loadRuntimeAndJobs(options = {}) {
       }
     } else if (state.selectedJobId) {
       state.selectedJobId = null;
-      localStorage.removeItem("aninamer.selectedJobId");
+      storageRemove("aninamer.selectedJobId");
       state.rollbackEligibility = null;
       state.rematchPreview = null;
       state.applyValidation = null;
@@ -493,7 +520,7 @@ function renderJobs() {
       <span class="job-item-meta">#${job.id} · 视频 ${job.video_moves_count} · 字幕 ${job.subtitle_moves_count}</span>
     `;
     button.addEventListener("click", () => {
-      localStorage.setItem("aninamer.selectedJobId", String(job.id));
+      storageSet("aninamer.selectedJobId", String(job.id));
       setSidebarOpen(false);
       loadJobDetail(job.id);
     });
@@ -510,7 +537,7 @@ async function loadJobDetail(jobId, options = {}) {
     clearNotice();
   }
   state.selectedJobId = jobId;
-  localStorage.setItem("aninamer.selectedJobId", String(jobId));
+  storageSet("aninamer.selectedJobId", String(jobId));
   state.detailLoadingJobId = jobId;
   if (!options.preserveRollback) {
     state.rollbackEligibility = null;
@@ -874,6 +901,63 @@ function labelFor(value) {
       .join(" · ");
   }
   return text;
+}
+
+function storageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Persistence is optional; keep the current page usable when storage is blocked.
+  }
+}
+
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Persistence is optional; keep the current page usable when storage is blocked.
+  }
+}
+
+function normalizeThemePreference(value) {
+  return ["system", "light", "dark"].includes(value) ? value : "system";
+}
+
+function resolvedTheme(preference) {
+  if (preference === "system") {
+    return systemThemeQuery.matches ? "dark" : "light";
+  }
+  return preference;
+}
+
+function initializeThemeControl() {
+  const preference = normalizeThemePreference(
+    document.documentElement.dataset.theme,
+  );
+  applyThemePreference(preference, { persist: false });
+}
+
+function applyThemePreference(value, options = {}) {
+  const preference = normalizeThemePreference(value);
+  const effectiveTheme = resolvedTheme(preference);
+  document.documentElement.dataset.theme = preference;
+  document.documentElement.dataset.resolvedTheme = effectiveTheme;
+  els.themeSelect.value = preference;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) {
+    meta.content = THEME_COLORS[effectiveTheme];
+  }
+  if (options.persist !== false) {
+    storageSet(THEME_STORAGE_KEY, preference);
+  }
 }
 
 function friendlyApiError(code, status, fallback) {

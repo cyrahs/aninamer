@@ -249,6 +249,7 @@ def test_ui_static_assets_are_served_without_api_token(
     with TestClient(app) as client:
         index_response = client.get("/ui")
         script_response = client.get("/ui/app.js")
+        styles_response = client.get("/ui/styles.css")
         favicon_response = client.get("/favicon.ico")
         favicon_png_response = client.get("/ui/favicon-32x32.png")
         touch_icon_response = client.get("/ui/apple-touch-icon.png")
@@ -265,6 +266,8 @@ def test_ui_static_assets_are_served_without_api_token(
     assert 'href="/ui/site.webmanifest"' in index_response.text
     assert script_response.status_code == 200
     assert "loadRuntimeAndJobs" in script_response.text
+    assert styles_response.status_code == 200
+    assert 'data-resolved-theme="dark"' in styles_response.text
     assert favicon_response.status_code == 200
     assert favicon_response.headers["content-type"] == "image/vnd.microsoft.icon"
     assert favicon_png_response.status_code == 200
