@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -60,6 +61,14 @@ class ApiRuntime:
     service: ApiService
 
 
+def _ui_cache_control(path: str) -> str | None:
+    if path.rstrip("/") == "/ui":
+        return "no-store"
+    if path in {"/ui/app.js", "/ui/styles.css"}:
+        return "no-cache, max-age=0, must-revalidate"
+    return None
+
+
 def create_app(
     config: AppConfig,
     *,
@@ -81,6 +90,18 @@ def create_app(
     )
     app.state.runtime = runtime
     _register_exception_handlers(app)
+
+    @app.middleware("http")
+    async def prevent_stale_ui_assets(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+        cache_control = _ui_cache_control(request.url.path)
+        if cache_control:
+            response.headers["Cache-Control"] = cache_control
+        return response
+
     static_dir = Path(__file__).parent / "static"
     app.mount("/ui", StaticFiles(directory=static_dir, html=True), name="ui")
 

@@ -1,7 +1,10 @@
 const storedToken = storageGet("aninamer.token") || "";
 const storedJobId = Number(storageGet("aninamer.selectedJobId"));
 const compactViewport = window.matchMedia("(max-width: 1023px)");
-const systemThemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
+const systemThemeQuery =
+  typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : { matches: false, addEventListener: null, addListener: null };
 const THEME_STORAGE_KEY = "aninamer.theme";
 const THEME_COLORS = { light: "#0f766e", dark: "#0b1217" };
 
@@ -151,7 +154,8 @@ const els = {
   sidebarToggle: document.querySelector("#sidebarToggle"),
   mobileJobCount: document.querySelector("#mobileJobCount"),
   jobCount: document.querySelector("#jobCount"),
-  themeSelect: document.querySelector("#themeSelect"),
+  themeControl: document.querySelector("#themeControl"),
+  themeOptions: Array.from(document.querySelectorAll("[data-theme-choice]")),
   runtimeStatus: document.querySelector("#runtimeStatus"),
   authForm: document.querySelector("#authForm"),
   apiToken: document.querySelector("#apiToken"),
@@ -238,8 +242,12 @@ const els = {
 els.apiToken.value = state.token;
 initializeThemeControl();
 
-els.themeSelect.addEventListener("change", () => {
-  applyThemePreference(els.themeSelect.value);
+els.themeControl.addEventListener("click", (event) => {
+  const option = event.target.closest("[data-theme-choice]");
+  if (!option || !els.themeControl.contains(option)) {
+    return;
+  }
+  applyThemePreference(option.dataset.themeChoice);
 });
 
 const handleSystemThemeChange = () => {
@@ -250,7 +258,7 @@ const handleSystemThemeChange = () => {
 
 if (typeof systemThemeQuery.addEventListener === "function") {
   systemThemeQuery.addEventListener("change", handleSystemThemeChange);
-} else {
+} else if (typeof systemThemeQuery.addListener === "function") {
   systemThemeQuery.addListener(handleSystemThemeChange);
 }
 
@@ -950,7 +958,12 @@ function applyThemePreference(value, options = {}) {
   const effectiveTheme = resolvedTheme(preference);
   document.documentElement.dataset.theme = preference;
   document.documentElement.dataset.resolvedTheme = effectiveTheme;
-  els.themeSelect.value = preference;
+  for (const option of els.themeOptions) {
+    option.setAttribute(
+      "aria-pressed",
+      String(option.dataset.themeChoice === preference),
+    );
+  }
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) {
     meta.content = THEME_COLORS[effectiveTheme];

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from aninamer.api.app import _ui_cache_control
+
 
 STATIC_DIR = Path("aninamer/api/static")
 
@@ -49,11 +51,25 @@ def test_theme_control_bootstraps_before_stylesheet() -> None:
     assert html.index("aninamer.theme") < html.index('rel="stylesheet"')
     assert 'new Set(["system", "light", "dark"])' in html
     assert "allowed.has(stored) ? stored : \"system\"" in html
+    assert 'typeof window.matchMedia === "function"' in html
     assert 'id="themeColor" name="theme-color"' in html
-    assert '<select id="themeSelect" name="themeSelect">' in html
-    assert '<option value="system">跟随系统</option>' in html
-    assert '<option value="light">浅色</option>' in html
-    assert '<option value="dark">深色</option>' in html
+    assert 'id="themeControl" class="theme-control" role="group"' in html
+    assert 'aria-label="配色"' in html
+    assert 'data-theme-choice="system"' in html
+    assert 'data-theme-choice="light"' in html
+    assert 'data-theme-choice="dark"' in html
+    assert 'aria-label="跟随系统"' in html
+    assert 'aria-label="浅色模式"' in html
+    assert 'aria-label="深色模式"' in html
+    assert html.count('aria-hidden="true" focusable="false"') == 3
+    assert "themeSelect" not in html
+
+    asset_versions = re.findall(
+        r'/ui/(?:styles\.css|app\.js)\?v=([^"\s]+)',
+        html,
+    )
+    assert len(asset_versions) == 2
+    assert len(set(asset_versions)) == 1
 
 
 def test_theme_runtime_persists_preference_and_tracks_system_changes() -> None:
@@ -70,6 +86,12 @@ def test_theme_runtime_persists_preference_and_tracks_system_changes() -> None:
     assert 'window.addEventListener("storage"' in source
     assert "meta.content = THEME_COLORS[effectiveTheme]" in source
     assert "storageSet(THEME_STORAGE_KEY, preference)" in source
+    assert 'document.querySelector("#themeControl")' in source
+    assert 'document.querySelectorAll("[data-theme-choice]")' in source
+    assert 'els.themeControl.addEventListener("click"' in source
+    assert "option.dataset.themeChoice" in source
+    assert 'option.setAttribute(\n      "aria-pressed"' in source
+    assert "themeSelect" not in source
     assert "function storageGet(key)" in source
     assert "function storageSet(key, value)" in source
     assert "function storageRemove(key)" in source
@@ -121,7 +143,31 @@ def test_theme_control_stays_usable_on_small_screens() -> None:
     mobile = styles[styles.index("@media (max-width: 640px)") :]
 
     assert ".topbar-actions {" in mobile
-    assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)" in mobile
-    assert ".theme-control," in mobile
-    assert ".theme-control select" in mobile
-    assert "min-width: 0" in mobile
+    assert "grid-template-columns: auto minmax(0, 1fr)" in mobile
+    assert ".theme-option {" in mobile
+    assert "width: 44px" in mobile
+    assert "min-height: 44px" in mobile
+
+
+def test_theme_icon_group_has_distinct_pressed_and_hover_states() -> None:
+    styles = (STATIC_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert ".theme-control {" in styles
+    assert "border-radius: 999px" in styles
+    assert ".theme-option svg {" in styles
+    assert 'stroke: currentColor' in styles
+    assert '.theme-option[aria-pressed="true"] {' in styles
+    assert "background: var(--accent-soft)" in styles
+
+
+def test_ui_cache_policy_prevents_mixed_static_asset_versions() -> None:
+    assert _ui_cache_control("/ui") == "no-store"
+    assert _ui_cache_control("/ui/") == "no-store"
+    assert _ui_cache_control("/ui/app.js") == (
+        "no-cache, max-age=0, must-revalidate"
+    )
+    assert _ui_cache_control("/ui/styles.css") == (
+        "no-cache, max-age=0, must-revalidate"
+    )
+    assert _ui_cache_control("/ui/favicon.ico") is None
+    assert _ui_cache_control("/healthz") is None

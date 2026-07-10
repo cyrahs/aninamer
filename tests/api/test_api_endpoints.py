@@ -248,8 +248,8 @@ def test_ui_static_assets_are_served_without_api_token(
 
     with TestClient(app) as client:
         index_response = client.get("/ui")
-        script_response = client.get("/ui/app.js")
-        styles_response = client.get("/ui/styles.css")
+        script_response = client.get("/ui/app.js?v=20260710-theme-icons")
+        styles_response = client.get("/ui/styles.css?v=20260710-theme-icons")
         favicon_response = client.get("/favicon.ico")
         favicon_png_response = client.get("/ui/favicon-32x32.png")
         touch_icon_response = client.get("/ui/apple-touch-icon.png")
@@ -260,13 +260,20 @@ def test_ui_static_assets_are_served_without_api_token(
         )
 
     assert index_response.status_code == 200
+    assert index_response.headers["cache-control"] == "no-store"
     assert "aninamer review" in index_response.text
     assert 'href="/ui/favicon.ico"' in index_response.text
     assert 'href="/ui/apple-touch-icon.png"' in index_response.text
     assert 'href="/ui/site.webmanifest"' in index_response.text
     assert script_response.status_code == 200
+    assert script_response.headers["cache-control"] == (
+        "no-cache, max-age=0, must-revalidate"
+    )
     assert "loadRuntimeAndJobs" in script_response.text
     assert styles_response.status_code == 200
+    assert styles_response.headers["cache-control"] == (
+        "no-cache, max-age=0, must-revalidate"
+    )
     assert 'data-resolved-theme="dark"' in styles_response.text
     assert favicon_response.status_code == 200
     assert favicon_response.headers["content-type"] == "image/vnd.microsoft.icon"
